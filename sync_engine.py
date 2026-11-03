@@ -1,6 +1,8 @@
 import hashlib
+import json
 import os
 import shutil
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -239,13 +241,33 @@ class SyncEngine:
             t_scan = time.time() - t_scan_start
 
             # 3. Scan remote files
-            self.set_status("Сканирование файлов в Яндекс Диске...")
+            manifest_path = f"{remote_folder.rstrip('/')}/.sync_manifest.json".replace("//", "/")
+            remote_files = None
             try:
-                remote_files = self.api.list_folder_recursive(remote_folder, progress_callback=lambda msg: self.set_status(msg))
-            except Exception as e:
-                self.log("ERROR", f"Ошибка чтения папки в облаке: {e}")
-                self.set_status("Ошибка чтения облака")
-                return
+                tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
+                self.api.download_file(manifest_path, tmp)
+                with open(tmp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                remote_files = data.get("files", {})
+                self.log("INFO", "Использован кеш-манифест удалённых файлов.")
+            except Exception:
+                remote_files = None
+
+            if remote_files is None:
+                self.set_status("Сканирование файлов в Яндекс Диске...")
+                try:
+                    remote_files = self.api.list_folder_recursive(remote_folder, progress_callback=lambda msg: self.set_status(msg))
+                except Exception as e:
+                    self.log("ERROR", f"Ошибка чтения папки в облаке: {e}")
+                    self.set_status("Ошибка чтения облака")
+                    return
+                try:
+                    tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump({"files": remote_files}, f, ensure_ascii=False)
+                    self.api.upload_file(tmp, manifest_path, overwrite=True)
+                except Exception:
+                    pass
 
             self.log("INFO", f"Файлов найдено: на ПК — {len(local_files)} (за {t_scan:.1f}с), в облаке — {len(remote_files)}")
 
