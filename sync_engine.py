@@ -275,6 +275,7 @@ class SyncEngine:
             all_rel_paths = set(local_files.keys()) | set(remote_files.keys()) | set(db_records.keys())
 
             stats = {"uploaded": 0, "downloaded": 0, "deleted": 0, "conflicts": 0}
+            self._manifest_invalid = False
 
             for rel_path in sorted(all_rel_paths):
                 if self._stop_event.is_set():
@@ -282,6 +283,10 @@ class SyncEngine:
 
                 if self._is_ignored(rel_path):
                     continue
+
+                if getattr(self, "_manifest_invalid", False):
+                    self.log("WARN", "Манифест признан устаревшим, синхронизация прервана для пересканирования.")
+                    break
 
                 local_info = local_files.get(rel_path)
                 remote_info = remote_files.get(rel_path)
