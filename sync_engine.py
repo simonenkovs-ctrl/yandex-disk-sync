@@ -427,6 +427,7 @@ class SyncEngine:
                     self.api.delete_resource(f"{self.config.get('remote_folder','/SyncFolder').strip()}/.sync_manifest.json", permanently=True)
                 except Exception:
                     pass
+                self._manifest_invalid = True
                 self.log("WARN", "Манифест устарел, будет пересоздан при следующей синхронизации.")
             self.log("WARN", f"⚠ Пропуск файла {rel_path}: {e}")
             return
