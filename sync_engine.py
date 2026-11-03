@@ -392,7 +392,11 @@ class SyncEngine:
             if self.on_progress:
                 self.on_progress(current, total, f"Скачивание {rel_path}")
 
-        self.api.download_file(remote_path, local_path, progress_callback=progress_cb)
+        try:
+            self.api.download_file(remote_path, local_path, progress_callback=progress_cb)
+        except Exception as e:
+            self.log("WARN", f"⚠ Пропуск файла {rel_path}: {e}")
+            return
 
         stat = os.stat(local_path)
         local_md5 = compute_md5(local_path)

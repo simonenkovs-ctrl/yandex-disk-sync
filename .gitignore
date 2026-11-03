@@ -1,7 +1,14 @@
-dist/
-build/
+# Ignore build artefacts
 __pycache__/
-*.db
+*.pyc
+build/
+.dist/
+# Local DB cache
+sync_state.db
+# Dist folder (compiled executable and zip)
+dist/
+# IDE files
+.vscode/
+.idea/
+# Secrets – not needed because config.json is already in repo, but you may want to keep token out
 config.json
-*.spec
-
