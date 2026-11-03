@@ -424,7 +424,7 @@ class SyncEngine:
         except Exception as e:
             if "404" in str(e):
                 try:
-                    self.api.delete_file(f"{remote_folder if 'remote_folder' in globals() else self.config.get('remote_folder','/SyncFolder').strip()}/.sync_manifest.json", permanently=True)
+                    self.api.delete_resource(f"{self.config.get('remote_folder','/SyncFolder').strip()}/.sync_manifest.json", permanently=True)
                 except Exception:
                     pass
                 self.log("WARN", "Манифест устарел, будет пересоздан при следующей синхронизации.")
