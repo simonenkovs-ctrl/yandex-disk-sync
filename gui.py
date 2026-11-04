@@ -82,7 +82,7 @@ class YandexDiskSyncApp:
         self.var_conflict = StringVar(value=self.config.get("conflict_resolution", "keep_both"))
         self.var_sync_deletions = BooleanVar(value=self.config.get("sync_deletions", True))
         self.var_minimize_tray = BooleanVar(value=self.config.get("minimize_to_tray", True))
-        self.var_autostart = BooleanVar(value=self.config.get("autostart", False))
+        self.var_autostart = BooleanVar(value=self._read_autostart_state())
 
         self.var_status_badge = StringVar(value="Подключение к Яндекс Диску...")
         self.var_storage_text = StringVar(value="Объем диска: проверка...")
@@ -428,6 +428,22 @@ class YandexDiskSyncApp:
             self.var_local_folder.set(chosen)
 
 
+    def _read_autostart_state(self) -> bool:
+        if winreg is None:
+            return False
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
+            try:
+                winreg.QueryValueEx(key, "YandexDiskSync")
+                return True
+            finally:
+                winreg.CloseKey(key)
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+
     def _apply_autostart(self, enabled):
         if winreg is None:
             return
@@ -438,8 +454,14 @@ class YandexDiskSyncApp:
             key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
         try:
             if enabled:
-                exe = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(sys.argv[0])
-                winreg.SetValueEx(key, "YandexDiskSync", 0, winreg.REG_SZ, f'"{exe}"')
+                if getattr(sys, "frozen", False):
+                    cmd = f'"{sys.executable}"'
+                else:
+                    _py = sys.executable
+                    _pyw = _py[:-4] + "w.exe" if _py.lower().endswith("python.exe") else _py
+                    _main = os.path.abspath(os.path.join(os.path.dirname(__file__), "main.py"))
+                    cmd = f'"{_pyw}" "{_main}"'
+                winreg.SetValueEx(key, "YandexDiskSync", 0, winreg.REG_SZ, cmd)
             else:
                 try:
                     winreg.DeleteValue(key, "YandexDiskSync")
