@@ -128,6 +128,8 @@ class SyncEngine:
                 return True
 
         filename = parts[-1]
+        if filename.startswith("~$") or filename.endswith("~"):
+            return True
         ext = os.path.splitext(filename)[1].lower()
         if ext in IGNORED_EXTENSIONS:
             return True
