@@ -420,7 +420,7 @@ class SyncEngine:
                 for _sf in self._skipped_files:
                     self.log("WARN", f"  - {_sf}")
 
-
+            if self.on_sync_completed:
                 self.on_sync_completed(stats)
 
         except Exception as e:
