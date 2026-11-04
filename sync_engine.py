@@ -17,7 +17,7 @@ from yandex_api import YandexDiskClient, YandexDiskAPIError
 IGNORED_NAMES: Set[str] = {
     ".git", ".svn", ".hg", "__pycache__", ".idea", ".vscode",
     "desktop.ini", "thumbs.db", ".ds_store", "$recycle.bin",
-    "sync_state.db", "config.json"
+    "sync_state.db", "config.json", ".bash_logout"
 }
 
 IGNORED_EXTENSIONS: Set[str] = {
@@ -122,6 +122,9 @@ class SyncEngine:
             if part_lower in IGNORED_NAMES:
                 return True
             if part_lower.startswith(".tmp_"):
+                return True
+            # Ignore sync manifest files and their conflict copies
+            if ".sync_manifest" in part_lower:
                 return True
 
         filename = parts[-1]
@@ -271,10 +274,15 @@ class SyncEngine:
 
             self.log("INFO", f"Файлов найдено: на ПК — {len(local_files)} (за {t_scan:.1f}с), в облаке — {len(remote_files)}")
 
+            # Exclude service manifest files from sync to prevent conflicts
+            local_files = {k: v for k, v in local_files.items() if not k.lower().startswith(".sync_manifest")}
+            remote_files = {k: v for k, v in remote_files.items() if not k.lower().startswith(".sync_manifest")}
+
             db_records = self.db.get_all_records()
             all_rel_paths = set(local_files.keys()) | set(remote_files.keys()) | set(db_records.keys())
 
             stats = {"uploaded": 0, "downloaded": 0, "deleted": 0, "conflicts": 0}
+            skipped_files: list = []  # files that failed to sync
             self._manifest_invalid = False
 
             for rel_path in sorted(all_rel_paths):
@@ -380,6 +388,12 @@ class SyncEngine:
                     f"✔ Все файлы актуальны! Изменений нет (ПК: {len(local_files)}, Облако: {len(remote_files)})."
                 )
 
+            # Report files that could not be synced
+            if skipped_files:
+                self.log("WARN", f"⚠ Не удалось синхронизировать файлов: {len(skipped_files)}")
+                for sf in skipped_files:
+                    self.log("WARN", f"  — {sf}")
+
             if self.on_sync_completed:
                 self.on_sync_completed(stats)
 
@@ -430,6 +444,7 @@ class SyncEngine:
                 self._manifest_invalid = True
                 self.log("WARN", "Манифест устарел, будет пересоздан при следующей синхронизации.")
             self.log("WARN", f"⚠ Пропуск файла {rel_path}: {e}")
+            skipped_files.append(rel_path)
             return
 
         stat = os.stat(local_path)
