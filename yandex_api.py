@@ -61,10 +61,20 @@ class YandexDiskClient:
                     msg = err_body or str(e)
                     error_code = ""
 
-                # Handle rate limiting (429) or transient 5xx
+                # Handle 429/5xx with Retry-After support
                 if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
-                    time.sleep(backoff)
-                    backoff *= 2
+                    _delay = backoff
+                    try:
+                        _ra = e.headers.get("Retry-After") if e.headers else None
+                    except Exception:
+                        _ra = None
+                    if _ra:
+                        try:
+                            _delay = min(float(_ra), 30.0)
+                        except (ValueError, TypeError):
+                            pass
+                    time.sleep(_delay)
+                    backoff = min(backoff * 2, 30.0)
                     continue
 
                 raise YandexDiskAPIError(f"HTTP {e.code}: {msg}", status_code=e.code, error_code=error_code)
@@ -140,27 +150,6 @@ class YandexDiskClient:
         exponential‑backoff retry (default 3 attempts) and adds a short pause between
         paginated calls to avoid hitting rate limits.
         """
-        # Helper for retrying a single request
-        def _request_with_retry(req_func):
-            retries = 3
-            backoff = 1.0
-            for attempt in range(retries):
-                try:
-                    return req_func()
-                except (urllib.error.URLError, urllib.error.HTTPError) as e:
-                    if attempt < retries - 1:
-                        time.sleep(backoff)
-                        backoff *= 2
-                        continue
-                    raise
-                except Exception as e:
-                    # Unexpected errors – propagate after retries
-                    if attempt < retries - 1:
-                        time.sleep(backoff)
-                        backoff *= 2
-                        continue
-                    raise
-        
         clean_root = self.normalize_remote_path(remote_root)
         files_map: Dict[str, Dict[str, Any]] = {}
         queue = [clean_root]
@@ -173,8 +162,7 @@ class YandexDiskClient:
             while True:
                 params = urllib.parse.urlencode({"path": current_folder, "limit": limit, "offset": offset})
                 url = f"{self.BASE_URL}/resources?{params}"
-                # Perform the request with retry logic
-                data = _request_with_retry(lambda: self._request("GET", url))
+                data = self._request("GET", url)
                 items = data.get("_embedded", {}).get("items", [])
                 for item in items:
                     item_type = item.get("type")
