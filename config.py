@@ -14,6 +14,7 @@ DEFAULT_CONFIG = {
     "minimize_to_tray": True,
     "auto_start_sync": True,
     "autostart": False,
+    "manifest_ttl_seconds": 3600,
 }
 
 CONFIG_FILE_NAME = "config.json"

@@ -21,7 +21,9 @@ IGNORED_NAMES: Set[str] = {
 }
 
 IGNORED_EXTENSIONS: Set[str] = {
-    ".tmp", ".crdownload", ".part", ".swp", ".lock"
+    ".tmp", ".temp", ".crdownload", ".part", ".partial", ".download",
+    ".swp", ".swo", ".lock",
+    ".bak", ".backup", ".old",
 }
 
 
@@ -253,7 +255,15 @@ class SyncEngine:
                 self.api.download_file(manifest_path, tmp)
                 with open(tmp, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                remote_files = data.get("files", {})
+                _ver = data.get("version", 1)
+                _ts = data.get("timestamp", 0)
+                _ttl = int(self.config.get("manifest_ttl_seconds", 3600))
+                _age = time.time() - _ts
+                if _ver >= 2 and _age > _ttl:
+                    self.log("INFO", f"Manifest stale ({_age/60:.0f} min > TTL {_ttl/60:.0f} min), rebuilding")
+                    remote_files = None
+                else:
+                    remote_files = data.get("files", {})
                 self.log("INFO", "Использован кеш-манифест удалённых файлов.")
             except Exception:
                 remote_files = None
@@ -269,7 +279,7 @@ class SyncEngine:
                 try:
                     tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
                     with open(tmp, "w", encoding="utf-8") as f:
-                        json.dump({"files": remote_files}, f, ensure_ascii=False)
+                        json.dump({"version": 2, "timestamp": time.time(), "files": remote_files}, f, ensure_ascii=False)
                     self.api.upload_file(tmp, manifest_path, overwrite=True)
                 except Exception:
                     pass
@@ -277,14 +287,15 @@ class SyncEngine:
             self.log("INFO", f"Файлов найдено: на ПК — {len(local_files)} (за {t_scan:.1f}с), в облаке — {len(remote_files)}")
 
             # Exclude service manifest files from sync to prevent conflicts
-            local_files = {k: v for k, v in local_files.items() if not k.lower().startswith(".sync_manifest")}
-            remote_files = {k: v for k, v in remote_files.items() if not k.lower().startswith(".sync_manifest")}
+            local_files = {k: v for k, v in local_files.items() if not self._is_ignored(k)}
+            remote_files = {k: v for k, v in remote_files.items() if not self._is_ignored(k)}
 
             db_records = self.db.get_all_records()
             all_rel_paths = set(local_files.keys()) | set(remote_files.keys()) | set(db_records.keys())
 
             stats = {"uploaded": 0, "downloaded": 0, "deleted": 0, "conflicts": 0}
-            skipped_files: list = []  # files that failed to sync
+            self._skipped_files: list = []
+            self._stale_remote_entries: set = set()
             self._manifest_invalid = False
 
             for rel_path in sorted(all_rel_paths):
@@ -390,13 +401,26 @@ class SyncEngine:
                     f"✔ Все файлы актуальны! Изменений нет (ПК: {len(local_files)}, Облако: {len(remote_files)})."
                 )
 
-            # Report files that could not be synced
-            if skipped_files:
-                self.log("WARN", f"⚠ Не удалось синхронизировать файлов: {len(skipped_files)}")
-                for sf in skipped_files:
-                    self.log("WARN", f"  — {sf}")
+            # Point-update manifest: drop 404 entries without full rebuild
+            if self._stale_remote_entries and remote_files is not None:
+                for _p in self._stale_remote_entries:
+                    remote_files.pop(_p, None)
+                try:
+                    tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump({"version": 2, "timestamp": time.time(), "files": remote_files}, f, ensure_ascii=False)
+                    self.api.upload_file(tmp, manifest_path, overwrite=True)
+                    self.log("INFO", f"Manifest updated: removed {len(self._stale_remote_entries)} stale entries (404)")
+                except Exception as e:
+                    self.log("WARN", f"Failed to update manifest after 404: {e}")
+                self._stale_remote_entries.clear()
 
-            if self.on_sync_completed:
+            if self._skipped_files:
+                self.log("WARN", f"Skipped files: {len(self._skipped_files)}")
+                for _sf in self._skipped_files:
+                    self.log("WARN", f"  - {_sf}")
+
+
                 self.on_sync_completed(stats)
 
         except Exception as e:
@@ -438,15 +462,13 @@ class SyncEngine:
         try:
             self.api.download_file(remote_path, local_path, progress_callback=progress_cb)
         except Exception as e:
-            if "404" in str(e):
-                try:
-                    self.api.delete_resource(f"{self.config.get('remote_folder','/SyncFolder').strip()}/.sync_manifest.json", permanently=True)
-                except Exception:
-                    pass
-                self._manifest_invalid = True
-                self.log("WARN", "Манифест устарел, будет пересоздан при следующей синхронизации.")
-            self.log("WARN", f"⚠ Пропуск файла {rel_path}: {e}")
-            skipped_files.append(rel_path)
+            _status = getattr(e, "status_code", None) or getattr(e, "code", None)
+            if _status == 404:
+                self.log("WARN", f"File 404, excluding from manifest: {rel_path}")
+                self._stale_remote_entries.add(rel_path)
+            else:
+                self.log("WARN", f"Skip file {rel_path}: {e}")
+            self._skipped_files.append(rel_path)
             return
 
         stat = os.stat(local_path)
