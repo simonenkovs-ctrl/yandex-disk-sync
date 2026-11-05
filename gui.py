@@ -137,9 +137,15 @@ class YandexDiskSyncApp:
         style.configure("TLabel", font=("Segoe UI", 10))
 
     def _build_ui(self):
+        # Настройка grid для корневого окна: статус бар всегда внизу и виден
+        self.root.grid_rowconfigure(0, weight=0)  # header
+        self.root.grid_rowconfigure(1, weight=1)  # notebook — забирает свободное место
+        self.root.grid_rowconfigure(2, weight=0)  # statusbar — всегда виден
+        self.root.grid_columnconfigure(0, weight=1)
+
         # 1. Header Frame (Top Card)
         header_outer = ttk.Frame(self.root, padding=(14, 10))
-        header_outer.pack(fill="x", side="top")
+        header_outer.grid(row=0, column=0, sticky="ew")
 
         header = ttk.Frame(header_outer, padding=(16, 12), style="Header.TFrame")
         header.pack(fill="x")
@@ -160,7 +166,7 @@ class YandexDiskSyncApp:
 
         # 2. Main Notebook (Tabs)
         notebook = ttk.Notebook(self.root)
-        notebook.pack(fill="both", expand=True, padx=14, pady=(4, 10))
+        notebook.grid(row=1, column=0, sticky="nsew", padx=14, pady=(4, 10))
 
         tab_main = ttk.Frame(notebook, padding=12)
         tab_settings = ttk.Frame(notebook, padding=12)
@@ -174,9 +180,9 @@ class YandexDiskSyncApp:
         self._build_tab_settings(tab_settings)
         self._build_tab_help(tab_help)
 
-        # 3. Bottom Status Bar
+        # 3. Bottom Status Bar — всегда виден, не вытесняется notebook
         statusbar = ttk.Frame(self.root, relief="groove", padding=(10, 6))
-        statusbar.pack(fill="x", side="bottom")
+        statusbar.grid(row=2, column=0, sticky="ew")
 
         self.lbl_op = ttk.Label(statusbar, textvariable=self.var_current_op, font=("Segoe UI", 9))
         self.lbl_op.pack(side="left")
