@@ -522,7 +522,6 @@ class YandexDiskSyncApp:
                     self.disk_progress["value"] = percent
                     if self.tray:
                         self.tray.update_tooltip(f"Яндекс Диск: {label}")
-                    self.engine.trigger_sync()
 
                 self.root.after(0, update_ui)
             except Exception as e:

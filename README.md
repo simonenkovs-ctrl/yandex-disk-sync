@@ -34,9 +34,9 @@
 ### Вариант 1 (Самый простой):
 Дважды кликните по файлу:
 ```
-run_yandex_disk.bat
+run.bat
 ```
-*(находится в корне папки или в папке `yandex_disk_sync\run.bat`)*
+*(находится в корне папки)*
 
 ### Вариант 2 (Через командную строку):
 ```cmd
@@ -94,7 +94,14 @@ yandex_disk_sync/
 ├── config.py            # Менеджер настроек (config.json)
 ├── tray_icon.py         # Интеграция с системным треем Windows
 ├── run.bat              # Скрипт запуска для Windows
-└── README.md            # Данная документация
+├── build_exe.bat        # Сборка в EXE через PyInstaller
+├── YandexDiskSync.spec  # Спецификация PyInstaller
+├── app.ico              # Иконка приложения
+├── install.bat          # Скрипт установки
+├── uninstall.bat        # Скрипт удаления
+├── installer.iss        # Скрипт Inno Setup
+├── README.md            # Данная документация
+└── CHANGELOG.md         # История изменений
 ```
 
 ---

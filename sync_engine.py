@@ -68,6 +68,9 @@ class SyncEngine:
         # In-memory hash cache: rel_path -> (mtime, size, md5)
         self._local_hash_cache: Dict[str, tuple[float, int, str]] = {}
 
+        # Files synced this cycle that need to be added to the remote manifest
+        self._manifest_files_to_update: Dict[str, Dict[str, Any]] = {}
+
     def log(self, level: str, message: str):
         if self.on_log:
             self.on_log(level, message)
@@ -353,33 +356,21 @@ class SyncEngine:
 
                 # CASE 2: File exists Locally, but NOT on Remote
                 elif local_info and not remote_info:
-                    if db_record and sync_deletions:
-                        self.log("INFO", f"Удаление локального файла (удален в облаке): {rel_path}")
-                        try:
-                            if os.path.exists(local_full_path):
-                                os.remove(local_full_path)
-                            self.db.delete_record(rel_path)
-                            stats["deleted"] += 1
-                        except Exception as e:
-                            self.log("ERROR", f"Не удалось удалить локальный файл {rel_path}: {e}")
-                    else:
-                        local_md5 = self._get_local_md5(rel_path, local_info, db_record)
-                        self._do_upload(local_full_path, remote_full_path, rel_path, local_info, local_md5)
-                        stats["uploaded"] += 1
+                    # Манифест может быть устаревшим (файл только что загружен,
+                    # но манифест в облаке ещё не перезаписан). Удалять локальный
+                    # файл только по записи в БД небезопасно — риск потери данных.
+                    # Всегда загружаем в облако, чтобы сохранить файл.
+                    local_md5 = self._get_local_md5(rel_path, local_info, db_record)
+                    self._do_upload(local_full_path, remote_full_path, rel_path, local_info, local_md5)
+                    stats["uploaded"] += 1
 
                 # CASE 3: File exists on Remote, but NOT Locally
                 elif remote_info and not local_info:
-                    if db_record and sync_deletions:
-                        self.log("INFO", f"Удаление файла в облаке (удален на ПК): {rel_path}")
-                        try:
-                            self.api.delete_resource(remote_full_path)
-                            self.db.delete_record(rel_path)
-                            stats["deleted"] += 1
-                        except Exception as e:
-                            self.log("ERROR", f"Не удалось удалить файл в облаке {rel_path}: {e}")
-                    else:
-                        self._do_download(remote_full_path, local_full_path, rel_path, remote_info)
-                        stats["downloaded"] += 1
+                    # Симметрично: если файла нет локально, но он есть в манифесте
+                    # облака — скачиваем. Не удаляем из облака по записи в БД,
+                    # так как манифест может быть неактуальным.
+                    self._do_download(remote_full_path, local_full_path, rel_path, remote_info)
+                    stats["downloaded"] += 1
 
                 # CASE 4: Obsolete record
                 elif db_record:
@@ -401,19 +392,26 @@ class SyncEngine:
                     f"✔ Все файлы актуальны! Изменений нет (ПК: {len(local_files)}, Облако: {len(remote_files)})."
                 )
 
-            # Point-update manifest: drop 404 entries without full rebuild
-            if self._stale_remote_entries and remote_files is not None:
+            # Point-update manifest: drop 404 entries and add newly synced files
+            if (self._stale_remote_entries or self._manifest_files_to_update) and remote_files is not None:
                 for _p in self._stale_remote_entries:
                     remote_files.pop(_p, None)
+                remote_files.update(self._manifest_files_to_update)
                 try:
                     tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
                     with open(tmp, "w", encoding="utf-8") as f:
                         json.dump({"version": 2, "timestamp": time.time(), "files": remote_files}, f, ensure_ascii=False)
                     self.api.upload_file(tmp, manifest_path, overwrite=True)
-                    self.log("INFO", f"Manifest updated: removed {len(self._stale_remote_entries)} stale entries (404)")
+                    msg_parts = []
+                    if self._stale_remote_entries:
+                        msg_parts.append(f"removed {len(self._stale_remote_entries)} stale entries")
+                    if self._manifest_files_to_update:
+                        msg_parts.append(f"added {len(self._manifest_files_to_update)} synced files")
+                    self.log("INFO", f"Manifest updated: {', '.join(msg_parts)}")
                 except Exception as e:
-                    self.log("WARN", f"Failed to update manifest after 404: {e}")
+                    self.log("WARN", f"Failed to update manifest: {e}")
                 self._stale_remote_entries.clear()
+                self._manifest_files_to_update.clear()
 
             if self._skipped_files:
                 self.log("WARN", f"Skipped files: {len(self._skipped_files)}")
@@ -449,6 +447,14 @@ class SyncEngine:
             local_md5, remote_md5, remote_mod, time.time(), "synced"
         )
         self.log("SUCCESS", f"✔ Успешно загружен: {rel_path}")
+        self._manifest_files_to_update[rel_path] = {
+            "type": "file",
+            "name": os.path.basename(local_path),
+            "path": remote_path,
+            "md5": remote_md5,
+            "size": size,
+            "modified": remote_mod,
+        }
 
     def _do_download(self, remote_path: str, local_path: str, rel_path: str, remote_info: Dict[str, Any]):
         size = remote_info.get("size", 0)
@@ -480,6 +486,14 @@ class SyncEngine:
             local_md5, remote_info.get("md5", ""), remote_info.get("modified", ""), time.time(), "synced"
         )
         self.log("SUCCESS", f"✔ Успешно скачан: {rel_path}")
+        self._manifest_files_to_update[rel_path] = {
+            "type": "file",
+            "name": os.path.basename(local_path),
+            "path": remote_path,
+            "md5": remote_info.get("md5", ""),
+            "size": stat.st_size,
+            "modified": remote_info.get("modified", ""),
+        }
 
     def _resolve_conflict(self, strategy: str, rel_path: str, local_path: str, remote_path: str,
                           local_info: Dict[str, Any], remote_info: Dict[str, Any], stats: Dict[str, int]):
