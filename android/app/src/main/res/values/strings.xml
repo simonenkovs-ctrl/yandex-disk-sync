@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Яндекс Диск Синхронизатор</string>
+    <string name="sync_channel_name">Синхронизация Яндекс Диска</string>
+    <string name="sync_channel_description">Уведомления о процессе синхронизации файлов</string>
+</resources>

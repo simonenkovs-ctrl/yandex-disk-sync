@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="yandex_red">#FFFC3F1D</color>
+    <color name="yandex_yellow">#FFFFCC00</color>
+    <color name="yandex_black">#FF212121</color>
+    <color name="yandex_gray">#FFF0F0F2</color>
+</resources>
