@@ -1,0 +1,549 @@
+import hashlib
+import json
+import os
+import shutil
+import tempfile
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, Optional, Callable, Set
+
+from config import ConfigManager
+from database import SyncDatabase
+from yandex_api import YandexDiskClient, YandexDiskAPIError
+
+
+IGNORED_NAMES: Set[str] = {
+    ".git", ".svn", ".hg", "__pycache__", ".idea", ".vscode",
+    "desktop.ini", "thumbs.db", ".ds_store", "$recycle.bin",
+    "sync_state.db", "config.json", ".bash_logout"
+}
+
+IGNORED_EXTENSIONS: Set[str] = {
+    ".tmp", ".temp", ".crdownload", ".part", ".partial", ".download",
+    ".swp", ".swo", ".lock",
+    ".bak", ".backup", ".old",
+}
+
+
+def compute_md5(file_path: str, block_size: int = 131072) -> str:
+    hasher = hashlib.md5()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(block_size), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest().lower()
+    except Exception:
+        return ""
+
+
+def parse_iso_time(iso_str: str) -> float:
+    try:
+        clean_str = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+class SyncEngine:
+    def __init__(self, config_manager: ConfigManager, database: SyncDatabase):
+        self.config = config_manager
+        self.db = database
+        self.api = YandexDiskClient(self.config.get("oauth_token", ""))
+
+        self.on_log: Optional[Callable[[str, str], None]] = None
+        self.on_status_change: Optional[Callable[[str], None]] = None
+        self.on_progress: Optional[Callable[[int, int, str], None]] = None
+        self.on_sync_completed: Optional[Callable[[Dict[str, int]], None]] = None
+
+        self._is_running = False
+        self._is_paused = False
+        self._sync_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._trigger_event = threading.Event()
+        self._sync_lock = threading.Lock()
+
+        # In-memory hash cache: rel_path -> (mtime, size, md5)
+        self._local_hash_cache: Dict[str, tuple[float, int, str]] = {}
+
+        # Files synced this cycle that need to be added to the remote manifest
+        self._manifest_files_to_update: Dict[str, Dict[str, Any]] = {}
+
+    def log(self, level: str, message: str):
+        if self.on_log:
+            self.on_log(level, message)
+        else:
+            print(f"[{level}] {message}")
+
+    def set_status(self, status: str):
+        if self.on_status_change:
+            self.on_status_change(status)
+
+    def is_running(self) -> bool:
+        return self._is_running
+
+    def is_paused(self) -> bool:
+        return self._is_paused
+
+    def pause(self):
+        self._is_paused = True
+        self.log("WARN", "Синхронизация приостановлена пользователем.")
+        self.set_status("Приостановлено")
+
+    def resume(self):
+        self._is_paused = False
+        self.log("INFO", "Синхронизация возобновлена.")
+        self.set_status("Работает")
+        self._trigger_event.set()
+
+    def start(self):
+        if self._is_running:
+            return
+        self._is_running = True
+        self._stop_event.clear()
+        self._sync_thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self._sync_thread.start()
+        self.log("INFO", "Фоновый процесс синхронизации запущен.")
+
+    def stop(self):
+        self._is_running = False
+        self._stop_event.set()
+        self._trigger_event.set()
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=3)
+        self.log("INFO", "Синхронизация остановлена.")
+        self.set_status("Остановлено")
+
+    def trigger_sync(self):
+        """Forces an immediate sync cycle"""
+        self._trigger_event.set()
+
+    def _is_ignored(self, rel_path: str) -> bool:
+        parts = rel_path.replace("\\", "/").split("/")
+        for part in parts:
+            part_lower = part.lower()
+            if part_lower in IGNORED_NAMES:
+                return True
+            if part_lower.startswith(".tmp_"):
+                return True
+            # Ignore sync manifest files and their conflict copies
+            if ".sync_manifest" in part_lower:
+                return True
+
+        filename = parts[-1]
+        if filename.startswith("~$") or filename.endswith("~"):
+            return True
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in IGNORED_EXTENSIONS:
+            return True
+        if filename.endswith(".tmp_download"):
+            return True
+        return False
+
+    def scan_local_folder(self, root_dir: str) -> Dict[str, Dict[str, Any]]:
+        """
+        Fast scan: collects file paths, mtimes, and sizes without computing heavy MD5 hashes.
+        MD5 is computed lazily only when comparing files.
+        """
+        local_files: Dict[str, Dict[str, Any]] = {}
+        if not os.path.exists(root_dir):
+            try:
+                os.makedirs(root_dir, exist_ok=True)
+            except Exception as e:
+                self.log("ERROR", f"Не удалось создать локальную папку {root_dir}: {e}")
+            return local_files
+
+        root_path = Path(root_dir).resolve()
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            dirnames[:] = [d for d in dirnames if d.lower() not in IGNORED_NAMES and not d.startswith(".")]
+
+            for filename in filenames:
+                full_path = os.path.join(dirpath, filename)
+                try:
+                    rel_path = os.path.relpath(full_path, root_path).replace("\\", "/")
+                    if self._is_ignored(rel_path):
+                        continue
+
+                    stat = os.stat(full_path)
+                    local_files[rel_path] = {
+                        "full_path": full_path,
+                        "mtime": stat.st_mtime,
+                        "size": stat.st_size,
+                    }
+                except (OSError, PermissionError) as e:
+                    self.log("WARN", f"Пропуск файла {filename}: {e}")
+
+        return local_files
+
+    def _get_local_md5(self, rel_path: str, local_info: Dict[str, Any], db_record: Optional[Dict[str, Any]]) -> str:
+        """
+        Retrieves local MD5 hash with instant DB/memory caching.
+        """
+        mtime = local_info["mtime"]
+        size = local_info["size"]
+
+        # 1. Check in-memory cache
+        cached = self._local_hash_cache.get(rel_path)
+        if cached and cached[0] == mtime and cached[1] == size:
+            return cached[2]
+
+        # 2. Check SQLite DB record
+        if db_record and db_record.get("local_mtime") == mtime and db_record.get("local_size") == size:
+            h = db_record.get("local_md5", "")
+            if h:
+                self._local_hash_cache[rel_path] = (mtime, size, h)
+                return h
+
+        # 3. Calculate from disk
+        file_md5 = compute_md5(local_info["full_path"])
+        if file_md5:
+            self._local_hash_cache[rel_path] = (mtime, size, file_md5)
+        return file_md5
+
+    def _worker_loop(self):
+        while not self._stop_event.is_set():
+            if not self._is_paused:
+                try:
+                    self.perform_sync()
+                except Exception as e:
+                    self.log("ERROR", f"Сбой в цикле синхронизации: {e}")
+                    self.set_status(f"Ошибка: {e}")
+
+            interval = int(self.config.get("sync_interval_seconds", 30))
+            self._trigger_event.wait(timeout=interval)
+            self._trigger_event.clear()
+
+    def perform_sync(self):
+        if not self._sync_lock.acquire(blocking=False):
+            self.log("INFO", "Синхронизация уже выполняется прямо сейчас...")
+            return
+
+        try:
+            token = self.config.get("oauth_token", "").strip()
+            if not token:
+                self.log("WARN", "OAuth-токен не указан. Укажите токен во вкладке «Настройки».")
+                self.set_status("Ожидание токена...")
+                return
+
+            self.api.set_token(token)
+            local_folder = self.config.get("local_folder", "").strip()
+            remote_folder = self.config.get("remote_folder", "/SyncFolder").strip()
+            sync_deletions = self.config.get("sync_deletions", True)
+            conflict_res = self.config.get("conflict_resolution", "keep_both")
+
+            self.log("INFO", f"▶ Начало синхронизации: [{local_folder}] ↔ [Я.Диск:{remote_folder}]")
+            self.set_status("Проверка облачной папки...")
+
+            # 1. Ensure remote root exists
+            try:
+                self.api.create_folder(remote_folder)
+            except Exception as e:
+                self.log("ERROR", f"Не удалось подключиться к Яндекс Диску: {e}")
+                self.set_status("Ошибка подключения к Яндекс Диску")
+                return
+
+            # 2. Fast scan local files
+            self.set_status("Сканирование файлов на ПК...")
+            t_scan_start = time.time()
+            local_files = self.scan_local_folder(local_folder)
+            t_scan = time.time() - t_scan_start
+
+            # 3. Scan remote files
+            manifest_path = f"{remote_folder.rstrip('/')}/.sync_manifest.json".replace("//", "/")
+            remote_files = None
+            try:
+                tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
+                self.api.download_file(manifest_path, tmp)
+                with open(tmp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                _ver = data.get("version", 1)
+                _ts = data.get("timestamp", 0)
+                _ttl = int(self.config.get("manifest_ttl_seconds", 3600))
+                _age = time.time() - _ts
+                if _ver >= 2 and _age > _ttl:
+                    self.log("INFO", f"Manifest stale ({_age/60:.0f} min > TTL {_ttl/60:.0f} min), rebuilding")
+                    remote_files = None
+                else:
+                    remote_files = data.get("files", {})
+                self.log("INFO", "Использован кеш-манифест удалённых файлов.")
+            except Exception:
+                remote_files = None
+
+            if remote_files is None:
+                self.set_status("Сканирование файлов в Яндекс Диске...")
+                try:
+                    remote_files = self.api.list_folder_recursive(remote_folder, progress_callback=lambda msg: self.set_status(msg))
+                except Exception as e:
+                    self.log("ERROR", f"Ошибка чтения папки в облаке: {e}")
+                    self.set_status("Ошибка чтения облака")
+                    return
+                try:
+                    tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump({"version": 2, "timestamp": time.time(), "files": remote_files}, f, ensure_ascii=False)
+                    self.api.upload_file(tmp, manifest_path, overwrite=True)
+                except Exception:
+                    pass
+
+            self.log("INFO", f"Файлов найдено: на ПК — {len(local_files)} (за {t_scan:.1f}с), в облаке — {len(remote_files)}")
+
+            # Exclude service manifest files from sync to prevent conflicts
+            local_files = {k: v for k, v in local_files.items() if not self._is_ignored(k)}
+            remote_files = {k: v for k, v in remote_files.items() if not self._is_ignored(k)}
+
+            db_records = self.db.get_all_records()
+            all_rel_paths = set(local_files.keys()) | set(remote_files.keys()) | set(db_records.keys())
+
+            stats = {"uploaded": 0, "downloaded": 0, "deleted": 0, "conflicts": 0}
+            self._skipped_files: list = []
+            self._stale_remote_entries: set = set()
+            self._manifest_invalid = False
+
+            for rel_path in sorted(all_rel_paths):
+                if self._stop_event.is_set():
+                    break
+
+                if self._is_ignored(rel_path):
+                    continue
+
+                if getattr(self, "_manifest_invalid", False):
+                    self.log("WARN", "Манифест признан устаревшим, синхронизация прервана для пересканирования.")
+                    break
+
+                local_info = local_files.get(rel_path)
+                remote_info = remote_files.get(rel_path)
+                db_record = db_records.get(rel_path)
+
+                remote_full_path = self.api.normalize_remote_path(f"{remote_folder}/{rel_path}")
+                local_full_path = os.path.join(local_folder, rel_path.replace("/", os.sep))
+
+                # CASE 1: File exists on both Local and Remote
+                if local_info and remote_info:
+                    # Quick size check first
+                    remote_size = remote_info.get("size", 0)
+                    local_size = local_info.get("size", 0)
+
+                    # Compute local MD5 lazily
+                    local_md5 = self._get_local_md5(rel_path, local_info, db_record)
+                    remote_md5 = remote_info.get("md5", "")
+
+                    if local_md5 and remote_md5 and local_md5 == remote_md5:
+                        self.db.upsert_record(
+                            rel_path, local_info["mtime"], local_size,
+                            local_md5, remote_md5, remote_info.get("modified", ""),
+                            time.time(), "synced"
+                        )
+                        continue
+
+                    # Files differ! Check change history
+                    local_changed = not db_record or db_record["local_md5"] != local_md5
+                    remote_changed = not db_record or db_record["remote_md5"] != remote_md5
+
+                    if local_changed and not remote_changed:
+                        self._do_upload(local_full_path, remote_full_path, rel_path, local_info, local_md5)
+                        stats["uploaded"] += 1
+                    elif remote_changed and not local_changed:
+                        self._do_download(remote_full_path, local_full_path, rel_path, remote_info)
+                        stats["downloaded"] += 1
+                    else:
+                        stats["conflicts"] += 1
+                        self._resolve_conflict(
+                            conflict_res, rel_path, local_full_path, remote_full_path,
+                            local_info, remote_info, stats
+                        )
+
+                # CASE 2: File exists Locally, but NOT on Remote
+                elif local_info and not remote_info:
+                    # Манифест может быть устаревшим (файл только что загружен,
+                    # но манифест в облаке ещё не перезаписан). Удалять локальный
+                    # файл только по записи в БД небезопасно — риск потери данных.
+                    # Всегда загружаем в облако, чтобы сохранить файл.
+                    local_md5 = self._get_local_md5(rel_path, local_info, db_record)
+                    self._do_upload(local_full_path, remote_full_path, rel_path, local_info, local_md5)
+                    stats["uploaded"] += 1
+
+                # CASE 3: File exists on Remote, but NOT Locally
+                elif remote_info and not local_info:
+                    # Симметрично: если файла нет локально, но он есть в манифесте
+                    # облака — скачиваем. Не удаляем из облака по записи в БД,
+                    # так как манифест может быть неактуальным.
+                    self._do_download(remote_full_path, local_full_path, rel_path, remote_info)
+                    stats["downloaded"] += 1
+
+                # CASE 4: Obsolete record
+                elif db_record:
+                    self.db.delete_record(rel_path)
+
+            now_str = datetime.now().strftime("%H:%M:%S")
+            self.set_status(f"Синхронизировано ({now_str})")
+
+            if any(stats.values()):
+                self.log(
+                    "SUCCESS",
+                    f"✔ Синхронизация завершена: ⬆ {stats['uploaded']} загружено, "
+                    f"⬇ {stats['downloaded']} скачано, 🗑 {stats['deleted']} удалено, "
+                    f"⚠️ {stats['conflicts']} конфликтов."
+                )
+            else:
+                self.log(
+                    "SUCCESS",
+                    f"✔ Все файлы актуальны! Изменений нет (ПК: {len(local_files)}, Облако: {len(remote_files)})."
+                )
+
+            # Point-update manifest: drop 404 entries and add newly synced files
+            if (self._stale_remote_entries or self._manifest_files_to_update) and remote_files is not None:
+                for _p in self._stale_remote_entries:
+                    remote_files.pop(_p, None)
+                remote_files.update(self._manifest_files_to_update)
+                try:
+                    tmp = os.path.join(tempfile.gettempdir(), "sync_manifest.json")
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump({"version": 2, "timestamp": time.time(), "files": remote_files}, f, ensure_ascii=False)
+                    self.api.upload_file(tmp, manifest_path, overwrite=True)
+                    msg_parts = []
+                    if self._stale_remote_entries:
+                        msg_parts.append(f"removed {len(self._stale_remote_entries)} stale entries")
+                    if self._manifest_files_to_update:
+                        msg_parts.append(f"added {len(self._manifest_files_to_update)} synced files")
+                    self.log("INFO", f"Manifest updated: {', '.join(msg_parts)}")
+                except Exception as e:
+                    self.log("WARN", f"Failed to update manifest: {e}")
+                self._stale_remote_entries.clear()
+                self._manifest_files_to_update.clear()
+
+            if self._skipped_files:
+                self.log("WARN", f"Skipped files: {len(self._skipped_files)}")
+                for _sf in self._skipped_files:
+                    self.log("WARN", f"  - {_sf}")
+
+            if self.on_sync_completed:
+                self.on_sync_completed(stats)
+
+        except Exception as e:
+            self.log("ERROR", f"Ошибка во время синхронизации: {e}")
+            self.set_status("Ошибка синхронизации")
+        finally:
+            self._sync_lock.release()
+
+    def _do_upload(self, local_path: str, remote_path: str, rel_path: str, local_info: Dict[str, Any], local_md5: str):
+        size = local_info["size"]
+        self.set_status(f"Загрузка: {rel_path}")
+        self.log("INFO", f"⬆ Загрузка в облако: {rel_path} ({size} байт)")
+
+        def progress_cb(current, total):
+            if self.on_progress:
+                self.on_progress(current, total, f"Загрузка {rel_path}")
+
+        self.api.upload_file(local_path, remote_path, overwrite=True, progress_callback=progress_cb)
+
+        meta = self.api.get_resource_meta(remote_path)
+        remote_md5 = meta.get("md5", local_md5) if meta else local_md5
+        remote_mod = meta.get("modified", "") if meta else ""
+
+        self.db.upsert_record(
+            rel_path, local_info["mtime"], size,
+            local_md5, remote_md5, remote_mod, time.time(), "synced"
+        )
+        self.log("SUCCESS", f"✔ Успешно загружен: {rel_path}")
+        self._manifest_files_to_update[rel_path] = {
+            "type": "file",
+            "name": os.path.basename(local_path),
+            "path": remote_path,
+            "md5": remote_md5,
+            "size": size,
+            "modified": remote_mod,
+        }
+
+    def _do_download(self, remote_path: str, local_path: str, rel_path: str, remote_info: Dict[str, Any]):
+        size = remote_info.get("size", 0)
+        self.set_status(f"Скачивание: {rel_path}")
+        self.log("INFO", f"⬇ Скачивание из облака: {rel_path} ({size} байт)")
+
+        def progress_cb(current, total):
+            if self.on_progress:
+                self.on_progress(current, total, f"Скачивание {rel_path}")
+
+        try:
+            self.api.download_file(remote_path, local_path, progress_callback=progress_cb)
+        except Exception as e:
+            _status = getattr(e, "status_code", None) or getattr(e, "code", None)
+            if _status == 404:
+                self.log("WARN", f"File 404, excluding from manifest: {rel_path}")
+                self._stale_remote_entries.add(rel_path)
+            else:
+                self.log("WARN", f"Skip file {rel_path}: {e}")
+            self._skipped_files.append(rel_path)
+            return
+
+        stat = os.stat(local_path)
+        local_md5 = compute_md5(local_path)
+        self._local_hash_cache[rel_path] = (stat.st_mtime, stat.st_size, local_md5)
+
+        self.db.upsert_record(
+            rel_path, stat.st_mtime, stat.st_size,
+            local_md5, remote_info.get("md5", ""), remote_info.get("modified", ""), time.time(), "synced"
+        )
+        self.log("SUCCESS", f"✔ Успешно скачан: {rel_path}")
+        self._manifest_files_to_update[rel_path] = {
+            "type": "file",
+            "name": os.path.basename(local_path),
+            "path": remote_path,
+            "md5": remote_info.get("md5", ""),
+            "size": stat.st_size,
+            "modified": remote_info.get("modified", ""),
+        }
+
+    def _resolve_conflict(self, strategy: str, rel_path: str, local_path: str, remote_path: str,
+                          local_info: Dict[str, Any], remote_info: Dict[str, Any], stats: Dict[str, int]):
+        self.log("WARN", f"⚠️ Обнаружен конфликт версий для: {rel_path}")
+        local_md5 = self._get_local_md5(rel_path, local_info, None)
+
+        if strategy == "local_wins":
+            self.log("INFO", f"Разрешение конфликта: приоритет локальной версии ({rel_path})")
+            self._do_upload(local_path, remote_path, rel_path, local_info, local_md5)
+            stats["uploaded"] += 1
+        elif strategy == "remote_wins":
+            self.log("INFO", f"Разрешение конфликта: приоритет облачной версии ({rel_path})")
+            self._do_download(remote_path, local_path, rel_path, remote_info)
+            stats["downloaded"] += 1
+        elif strategy == "newer_wins":
+            remote_epoch = parse_iso_time(remote_info.get("modified", ""))
+            local_epoch = local_info.get("mtime", 0.0)
+            if local_epoch >= remote_epoch:
+                self.log("INFO", f"Разрешение: локальный новее ({rel_path})")
+                self._do_upload(local_path, remote_path, rel_path, local_info, local_md5)
+                stats["uploaded"] += 1
+            else:
+                self.log("INFO", f"Разрешение: облачный новее ({rel_path})")
+                self._do_download(remote_path, local_path, rel_path, remote_info)
+                stats["downloaded"] += 1
+        else:
+            # keep_both
+            dir_name, file_name = os.path.split(local_path)
+            stem, ext = os.path.splitext(file_name)
+            time_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+            conflict_filename = f"{stem} (Конфликт PC {time_suffix}){ext}"
+            conflict_local_path = os.path.join(dir_name, conflict_filename)
+
+            self.log("INFO", f"Сохранение обеих версий: {file_name} -> {conflict_filename}")
+            shutil.copy2(local_path, conflict_local_path)
+
+            self._do_download(remote_path, local_path, rel_path, remote_info)
+            stats["downloaded"] += 1
+
+            rel_dir = os.path.dirname(rel_path).replace("\\", "/")
+            conflict_rel = f"{rel_dir}/{conflict_filename}".lstrip("/") if rel_dir else conflict_filename
+            conflict_remote_path = self.api.normalize_remote_path(
+                f"{self.config.get('remote_folder')}/{conflict_rel}"
+            )
+            c_stat = os.stat(conflict_local_path)
+            c_info = {
+                "full_path": conflict_local_path,
+                "mtime": c_stat.st_mtime,
+                "size": c_stat.st_size,
+            }
+            c_md5 = compute_md5(conflict_local_path)
+            self._do_upload(conflict_local_path, conflict_remote_path, conflict_rel, c_info, c_md5)
+            stats["uploaded"] += 1

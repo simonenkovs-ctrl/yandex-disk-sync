@@ -25,14 +25,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Grant execute permission for gradlew
+      - name: Build Android APK
         run: |
-          if [ -d "android" ]; then cd android; fi
-          chmod +x gradlew || true
-
-      - name: Build APK with Gradle
-        run: |
-          if [ -d "android" ]; then cd android; fi
+          cd android
+          gradle wrapper
+          chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: List generated APKs
