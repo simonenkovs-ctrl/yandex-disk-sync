@@ -544,7 +544,7 @@ class SyncEngine(
     private fun isIgnored(name: String): Boolean {
         val ignoredNames = setOf(
             ".git", ".svn", "__pycache__", ".idea", ".vscode",
-            "desktop.ini", "thumbs.db", ".ds_store", "$recycle.bin",
+            "desktop.ini", "thumbs.db", ".ds_store", "\$recycle.bin",
             ".nomedia"
         )
         val ignoredExts = setOf(
