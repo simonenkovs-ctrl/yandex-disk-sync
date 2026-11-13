@@ -218,12 +218,20 @@ fun MainScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Папки для синхронизации (${folders.size})",
+                    text = "Папки (${folders.size})",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
-                TextButton(onClick = onNavigateToFolders) {
-                    Text("Настроить все")
+                TextButton(
+                    onClick = onNavigateToFolders,
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) {
+                    Text(
+                        text = "Настроить все",
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
             }
         }
