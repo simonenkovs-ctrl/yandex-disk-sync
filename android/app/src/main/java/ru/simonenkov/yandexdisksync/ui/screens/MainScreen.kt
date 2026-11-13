@@ -273,9 +273,7 @@ fun MainScreen(
                         preferences.addOrUpdateFolder(folder.copy(enabled = enabled))
                     },
                     onSyncSingle = {
-                        scope.launch {
-                            syncEngine.syncSingleFolder(folder)
-                        }
+                        SyncForegroundService.startSync(context, folder.id)
                     }
                 )
             }

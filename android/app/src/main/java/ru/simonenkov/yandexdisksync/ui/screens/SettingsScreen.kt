@@ -1,11 +1,17 @@
 package ru.simonenkov.yandexdisksync.ui.screens
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -33,11 +39,19 @@ fun SettingsScreen(
     var token by remember { mutableStateOf(preferences.oauthToken) }
     var syncDeletions by remember { mutableStateOf(preferences.syncDeletions) }
     var wifiOnly by remember { mutableStateOf(preferences.wifiOnly) }
-    var conflictResolution by remember { mutableStateOf(preferences.conflictResolution) }
 
     var checkStatus by remember { mutableStateOf<String?>(null) }
     var isChecking by remember { mutableStateOf(false) }
     var isSuccess by remember { mutableStateOf(false) }
+
+    val powerManager = remember { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
+    var isBatteryOptIgnored by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && powerManager != null) {
+                powerManager.isIgnoringBatteryOptimizations(context.packageName)
+            } else true
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -137,6 +151,65 @@ fun SettingsScreen(
         Divider(modifier = Modifier.padding(vertical = 8.dp))
 
         Text(
+            text = "Работа в фоновом режиме и блокировка",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isBatteryOptIgnored) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.errorContainer
+            )
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (isBatteryOptIgnored) Icons.Default.BatteryChargingFull else Icons.Default.BatteryAlert,
+                        contentDescription = null,
+                        tint = if (isBatteryOptIgnored) SuccessGreen else MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (isBatteryOptIgnored) "Синхронизация при блокировке разрешена" else "Требуется разрешение для фоновой работы",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (isBatteryOptIgnored) {
+                        "Оптимизация батареи отключена. Процессор и Wi-Fi удерживаются активными во время синхронизации даже при выключенном экране."
+                    } else {
+                        "Android останавливает фоновую передачу файлов при выключении экрана. Отключите оптимизацию батареи для приложения."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!isBatteryOptIgnored && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            try {
+                                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                context.startActivity(intent)
+                            }
+                        }
+                    ) {
+                        Text("Разрешить работу без ограничений")
+                    }
+                }
+            }
+        }
+
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text(
             text = "Параметры синхронизации",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
@@ -189,7 +262,7 @@ fun SettingsScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Версия приложения: 1.2.2 Android Edition",
+            text = "Версия приложения: 1.2.3 Android Edition",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.outline
         )
