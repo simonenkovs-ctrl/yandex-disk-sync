@@ -24,9 +24,9 @@ class YandexDiskClient(private var token: String) {
 
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS) // 0 = без таймаута на чтение для больших файлов (видео mp4 и т.д.)
+        .writeTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
     companion object {

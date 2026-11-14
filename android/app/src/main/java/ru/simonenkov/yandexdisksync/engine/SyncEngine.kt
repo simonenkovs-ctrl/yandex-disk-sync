@@ -2,6 +2,7 @@
 
 import android.content.Context
 import android.net.Uri
+import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -382,50 +383,58 @@ class SyncEngine(
             }
 
             if (needsDownload) {
-                val targetDoc = getOrCreateDocumentFile(rootDoc, relPath, res.name)
-                if (targetDoc != null) {
-                    _progressFlow.value = _progressFlow.value.copy(
-                        currentFileName = res.name,
-                        actionText = "Скачивание из облака [$idx/$total]",
-                        currentBytes = 0,
-                        totalBytes = remoteSize,
-                        processedFiles = idx,
-                        totalFiles = total
-                    )
+                try {
+                    val targetDoc = getOrCreateDocumentFile(rootDoc, relPath, res.name)
+                    if (targetDoc != null) {
+                        _progressFlow.value = _progressFlow.value.copy(
+                            currentFileName = res.name,
+                            actionText = "Скачивание из облака [$idx/$total]",
+                            currentBytes = 0,
+                            totalBytes = remoteSize,
+                            processedFiles = idx,
+                            totalFiles = total
+                        )
 
-                    log(LogLevel.INFO, "⬇ Скачивание: $relPath (${formatBytes(remoteSize)})")
-                    val outputStream = context.contentResolver.openOutputStream(targetDoc.uri, "wt")
-                    if (outputStream != null) {
-                        val success = outputStream.use { out ->
-                            client.downloadFile(
-                                remotePath = res.path.removePrefix("disk:"),
-                                outputStream = out,
-                                onProgress = { read, tot ->
-                                    _progressFlow.value = _progressFlow.value.copy(
-                                        currentBytes = read,
-                                        totalBytes = tot
-                                    )
-                                }
-                            )
-                        }
-                        if (success) {
-                            count++
-                            val newLocalMd5 = computeLocalMd5(targetDoc)
-                            db.fileRecordDao().insertOrUpdate(
-                                FileRecord(
-                                    id = "${pair.id}:$relPath",
-                                    pairId = pair.id,
-                                    relPath = relPath,
-                                    localMd5 = newLocalMd5,
-                                    remoteMd5 = remoteMd5,
-                                    localMtime = targetDoc.lastModified(),
-                                    remoteMtime = System.currentTimeMillis(),
-                                    size = remoteSize,
-                                    lastSyncTime = System.currentTimeMillis()
+                        log(LogLevel.INFO, "⬇ Скачивание: $relPath (${formatBytes(remoteSize)})")
+                        val outputStream = context.contentResolver.openOutputStream(targetDoc.uri, "wt")
+                        if (outputStream != null) {
+                            val success = outputStream.use { out ->
+                                client.downloadFile(
+                                    remotePath = res.path.removePrefix("disk:"),
+                                    outputStream = out,
+                                    onProgress = { read, tot ->
+                                        _progressFlow.value = _progressFlow.value.copy(
+                                            currentBytes = read,
+                                            totalBytes = tot
+                                        )
+                                    }
                                 )
-                            )
+                            }
+                            if (success) {
+                                count++
+                                val newLocalMd5 = computeLocalMd5(targetDoc)
+                                db.fileRecordDao().insertOrUpdate(
+                                    FileRecord(
+                                        id = "${pair.id}:$relPath",
+                                        pairId = pair.id,
+                                        relPath = relPath,
+                                        localMd5 = newLocalMd5,
+                                        remoteMd5 = remoteMd5,
+                                        localMtime = targetDoc.lastModified(),
+                                        remoteMtime = System.currentTimeMillis(),
+                                        size = remoteSize,
+                                        lastSyncTime = System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        } else {
+                            log(LogLevel.ERROR, "Не удалось открыть поток записи для файла: $relPath")
                         }
+                    } else {
+                        log(LogLevel.ERROR, "Не удалось создать целевой файл на устройстве: $relPath")
                     }
+                } catch (e: Exception) {
+                    log(LogLevel.ERROR, "Ошибка скачивания файла [$relPath]: ${e.localizedMessage ?: e.message}")
                 }
             }
         }
@@ -499,35 +508,43 @@ class SyncEngine(
                     db.fileRecordDao().deleteRecord(pair.id, relPath)
                 } else {
                     // Новый файл в облаке -> скачиваем
-                    log(LogLevel.INFO, "⬇ Скачивание нового файла из облака: $relPath")
-                    val targetDoc = getOrCreateDocumentFile(rootDoc, relPath, remoteRes.name)
-                    if (targetDoc != null) {
-                        val outputStream = context.contentResolver.openOutputStream(targetDoc.uri, "wt")
-                        if (outputStream != null) {
-                            val success = outputStream.use { out ->
-                                client.downloadFile(
-                                    remotePath = remoteRes.path.removePrefix("disk:"),
-                                    outputStream = out
-                                )
-                            }
-                            if (success) {
-                                count++
-                                val md5 = computeLocalMd5(targetDoc)
-                                db.fileRecordDao().insertOrUpdate(
-                                    FileRecord(
-                                        id = "${pair.id}:$relPath",
-                                        pairId = pair.id,
-                                        relPath = relPath,
-                                        localMd5 = md5,
-                                        remoteMd5 = remoteRes.md5.orEmpty(),
-                                        localMtime = targetDoc.lastModified(),
-                                        remoteMtime = System.currentTimeMillis(),
-                                        size = remoteRes.size,
-                                        lastSyncTime = System.currentTimeMillis()
+                    try {
+                        log(LogLevel.INFO, "⬇ Скачивание нового файла из облака: $relPath")
+                        val targetDoc = getOrCreateDocumentFile(rootDoc, relPath, remoteRes.name)
+                        if (targetDoc != null) {
+                            val outputStream = context.contentResolver.openOutputStream(targetDoc.uri, "wt")
+                            if (outputStream != null) {
+                                val success = outputStream.use { out ->
+                                    client.downloadFile(
+                                        remotePath = remoteRes.path.removePrefix("disk:"),
+                                        outputStream = out
                                     )
-                                )
+                                }
+                                if (success) {
+                                    count++
+                                    val md5 = computeLocalMd5(targetDoc)
+                                    db.fileRecordDao().insertOrUpdate(
+                                        FileRecord(
+                                            id = "${pair.id}:$relPath",
+                                            pairId = pair.id,
+                                            relPath = relPath,
+                                            localMd5 = md5,
+                                            remoteMd5 = remoteRes.md5.orEmpty(),
+                                            localMtime = targetDoc.lastModified(),
+                                            remoteMtime = System.currentTimeMillis(),
+                                            size = remoteRes.size,
+                                            lastSyncTime = System.currentTimeMillis()
+                                        )
+                                    )
+                                }
+                            } else {
+                                log(LogLevel.ERROR, "Не удалось открыть поток записи для файла: $relPath")
                             }
+                        } else {
+                            log(LogLevel.ERROR, "Не удалось создать целевой файл на устройстве: $relPath")
                         }
+                    } catch (e: Exception) {
+                        log(LogLevel.ERROR, "Ошибка скачивания файла [$relPath]: ${e.localizedMessage ?: e.message}")
                     }
                 }
             } else if (localDoc != null && remoteRes != null) {
@@ -614,7 +631,13 @@ class SyncEngine(
         if (existing != null && existing.isFile) {
             return existing
         }
-        return current.createFile("application/octet-stream", fileName)
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        val mimeType = if (ext.isNotEmpty()) {
+            MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+        } else {
+            "application/octet-stream"
+        }
+        return current.createFile(mimeType, fileName)
     }
 
     private fun computeLocalMd5(docFile: DocumentFile): String {
