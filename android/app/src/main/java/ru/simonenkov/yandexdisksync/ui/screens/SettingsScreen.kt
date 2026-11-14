@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.ui.screens
+﻿package ru.simonenkov.yandexdisksync.ui.screens
 
 import android.content.Context
 import android.content.Intent
@@ -35,6 +35,13 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val appVersionName = remember {
+        try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
+        }
+    }
 
     var token by remember { mutableStateOf(preferences.oauthToken) }
     var syncDeletions by remember { mutableStateOf(preferences.syncDeletions) }
@@ -69,7 +76,7 @@ fun SettingsScreen(
         OutlinedTextField(
             value = token,
             onValueChange = {
-                token = it
+                token = it.filterNot { c -> c.isWhitespace() }
                 preferences.oauthToken = it
             },
             label = { Text("OAuth-токен доступа") },
@@ -266,7 +273,7 @@ fun SettingsScreen(
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    text = "Версия: 1.2.4 Android Edition",
+                    text = "Версия: ${appVersionName} Android Edition",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
@@ -279,3 +286,4 @@ fun SettingsScreen(
         }
     }
 }
+

@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.api
+﻿package ru.simonenkov.yandexdisksync.api
 
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +17,11 @@ class YandexDiskApiException(message: String, val statusCode: Int? = null) : Exc
 
 class YandexDiskClient(private var token: String) {
 
+    init {
+        // Strip whitespace (CR/LF/spaces) injected by clipboard paste
+        token = token.filterNot { it.isWhitespace() }
+    }
+
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -29,7 +34,7 @@ class YandexDiskClient(private var token: String) {
     }
 
     fun updateToken(newToken: String) {
-        this.token = newToken.trim()
+        this.token = newToken.filterNot { it.isWhitespace() }
     }
 
     private fun authHeaders(): Headers {
@@ -38,7 +43,7 @@ class YandexDiskClient(private var token: String) {
         }
         return Headers.Builder()
             .add("Authorization", "OAuth $token")
-            .add("User-Agent", "YandexDiskSyncAndroid/1.2.2")
+            .add("User-Agent", "YandexDiskSyncAndroid/1.3.1")
             .add("Accept", "application/json")
             .build()
     }
@@ -289,3 +294,4 @@ class YandexDiskClient(private var token: String) {
         }
     }
 }
+
