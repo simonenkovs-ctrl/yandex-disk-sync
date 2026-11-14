@@ -25,20 +25,20 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Android APK
+      - name: Build Release APK
         run: |
           cd android
           gradle wrapper
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: List generated APKs
         run: |
           find . -name "*.apk" -ls
 
-      - name: Upload Debug APK Artifact
+      - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: yandex-disk-sync-debug-apk
+          name: yandex-disk-sync-release-apk
           path: "**/build/outputs/apk/**/*.apk"
           retention-days: 30
