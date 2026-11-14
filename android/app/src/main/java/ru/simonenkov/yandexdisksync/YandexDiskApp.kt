@@ -21,5 +21,8 @@ class YandexDiskApp : Application() {
         preferences = AppPreferences(this)
         database = AppDatabase.getInstance(this)
         syncEngine = SyncEngine(this, preferences, database)
+
+        // Планирование автосинхронизации при запуске приложения
+        ru.simonenkov.yandexdisksync.service.DailySyncWorker.schedule(this, preferences)
     }
 }

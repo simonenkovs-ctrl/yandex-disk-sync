@@ -46,6 +46,11 @@ fun SettingsScreen(
     var token by remember { mutableStateOf(preferences.oauthToken) }
     var syncDeletions by remember { mutableStateOf(preferences.syncDeletions) }
     var wifiOnly by remember { mutableStateOf(preferences.wifiOnly) }
+    var dailySyncEnabled by remember { mutableStateOf(preferences.dailySyncEnabled) }
+    var dailySyncHour by remember { mutableStateOf(preferences.dailySyncHour) }
+    var dailySyncMinute by remember { mutableStateOf(preferences.dailySyncMinute) }
+    var dailySyncRequiresCharging by remember { mutableStateOf(preferences.dailySyncRequiresCharging) }
+    var showTimePickerDialog by remember { mutableStateOf(false) }
 
     var checkStatus by remember { mutableStateOf<String?>(null) }
     var isChecking by remember { mutableStateOf(false) }
@@ -262,6 +267,118 @@ fun SettingsScreen(
                 onCheckedChange = {
                     wifiOnly = it
                     preferences.wifiOnly = it
+                    ru.simonenkov.yandexdisksync.service.DailySyncWorker.schedule(context, preferences)
+                }
+            )
+        }
+
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text(
+            text = "Автоматическая синхронизация",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Синхронизировать раз в день", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Автоматический запуск синхронизации в фоновом режиме",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = dailySyncEnabled,
+                onCheckedChange = {
+                    dailySyncEnabled = it
+                    preferences.dailySyncEnabled = it
+                    ru.simonenkov.yandexdisksync.service.DailySyncWorker.schedule(context, preferences)
+                }
+            )
+        }
+
+        if (dailySyncEnabled) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Время запуска", style = MaterialTheme.typography.bodyMedium)
+                    val timeFormatted = String.format("%02d:%02d", dailySyncHour, dailySyncMinute)
+                    Text(
+                        "Запуск каждый день около $timeFormatted",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                OutlinedButton(onClick = { showTimePickerDialog = true }) {
+                    Text(String.format("%02d:%02d", dailySyncHour, dailySyncMinute))
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Только на зарядке", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Запускать автосинхронизацию, только когда телефон подключен к зарядному устройству",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = dailySyncRequiresCharging,
+                    onCheckedChange = {
+                        dailySyncRequiresCharging = it
+                        preferences.dailySyncRequiresCharging = it
+                        ru.simonenkov.yandexdisksync.service.DailySyncWorker.schedule(context, preferences)
+                    }
+                )
+            }
+        }
+
+        if (showTimePickerDialog) {
+            val timePickerState = rememberTimePickerState(
+                initialHour = dailySyncHour,
+                initialMinute = dailySyncMinute,
+                is24Hour = true
+            )
+            AlertDialog(
+                onDismissRequest = { showTimePickerDialog = false },
+                title = { Text("Выберите время автосинхронизации") },
+                text = {
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        TimePicker(state = timePickerState)
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            dailySyncHour = timePickerState.hour
+                            dailySyncMinute = timePickerState.minute
+                            preferences.dailySyncHour = timePickerState.hour
+                            preferences.dailySyncMinute = timePickerState.minute
+                            ru.simonenkov.yandexdisksync.service.DailySyncWorker.schedule(context, preferences)
+                            showTimePickerDialog = false
+                        }
+                    ) {
+                        Text("ОК")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showTimePickerDialog = false }) {
+                        Text("Отмена")
+                    }
                 }
             )
         }

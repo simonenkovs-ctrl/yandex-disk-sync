@@ -59,6 +59,22 @@ class SyncEngine(
             return@withContext
         }
 
+        if (prefs.wifiOnly) {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            val isWifi = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val net = cm?.activeNetwork
+                val caps = cm?.getNetworkCapabilities(net)
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+            } else {
+                @Suppress("DEPRECATION")
+                cm?.activeNetworkInfo?.type == android.net.ConnectivityManager.TYPE_WIFI
+            }
+            if (!isWifi) {
+                log(LogLevel.WARNING, "Синхронизация пропущена: включена опция «Только по Wi-Fi», а Wi-Fi не подключен.")
+                return@withContext
+            }
+        }
+
         val token = prefs.oauthToken
         if (token.isBlank()) {
             log(LogLevel.ERROR, "Не указан OAuth-токен в настройках")

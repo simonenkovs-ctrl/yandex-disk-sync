@@ -37,6 +37,22 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_WIFI_ONLY, false)
         set(value) = prefs.edit().putBoolean(KEY_WIFI_ONLY, value).apply()
 
+    var dailySyncEnabled: Boolean
+        get() = prefs.getBoolean(KEY_DAILY_SYNC_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_DAILY_SYNC_ENABLED, value).apply()
+
+    var dailySyncHour: Int
+        get() = prefs.getInt(KEY_DAILY_SYNC_HOUR, 3) // по умолчанию 03:00 ночи
+        set(value) = prefs.edit().putInt(KEY_DAILY_SYNC_HOUR, value).apply()
+
+    var dailySyncMinute: Int
+        get() = prefs.getInt(KEY_DAILY_SYNC_MINUTE, 0)
+        set(value) = prefs.edit().putInt(KEY_DAILY_SYNC_MINUTE, value).apply()
+
+    var dailySyncRequiresCharging: Boolean
+        get() = prefs.getBoolean(KEY_DAILY_SYNC_REQUIRES_CHARGING, false)
+        set(value) = prefs.edit().putBoolean(KEY_DAILY_SYNC_REQUIRES_CHARGING, value).apply()
+
     fun getFolders(): List<SyncFolderPair> {
         return loadFolders()
     }
@@ -94,6 +110,10 @@ class AppPreferences(context: Context) {
         private const val KEY_CONFLICT = "conflict_resolution"
         private const val KEY_SYNC_DELETIONS = "sync_deletions"
         private const val KEY_WIFI_ONLY = "wifi_only"
+        private const val KEY_DAILY_SYNC_ENABLED = "daily_sync_enabled"
+        private const val KEY_DAILY_SYNC_HOUR = "daily_sync_hour"
+        private const val KEY_DAILY_SYNC_MINUTE = "daily_sync_minute"
+        private const val KEY_DAILY_SYNC_REQUIRES_CHARGING = "daily_sync_requires_charging"
     }
 }
 
