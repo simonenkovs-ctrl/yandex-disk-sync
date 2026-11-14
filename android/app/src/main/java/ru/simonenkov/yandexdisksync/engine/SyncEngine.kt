@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.engine
+﻿package ru.simonenkov.yandexdisksync.engine
 
 import android.content.Context
 import android.net.Uri
@@ -15,6 +15,8 @@ import ru.simonenkov.yandexdisksync.data.SyncFolderPair
 import ru.simonenkov.yandexdisksync.data.SyncMode
 import ru.simonenkov.yandexdisksync.data.db.AppDatabase
 import ru.simonenkov.yandexdisksync.data.db.FileRecord
+import java.io.File
+import java.io.FileInputStream
 import java.io.InputStream
 import java.security.MessageDigest
 
@@ -190,46 +192,133 @@ class SyncEngine(
         var count = 0
         var idx = 0
         val total = localFiles.size
+        val records = db.fileRecordDao().getRecordsForPair(pair.id).associateBy { it.relPath }
 
         for ((relPath, docFile) in localFiles) {
             if (isCancelled) break
             idx++
-            val remoteRes = remoteFiles[relPath]
+            val name = docFile.name.orEmpty()
             val localSize = docFile.length()
+            val localMtime = docFile.lastModified()
+            val record = records[relPath]
+
+            val useCompression = pair.compressPhotos && PhotoCompressor.isCompressible(name)
+            val sig = if (useCompression) "jpg-q${pair.effectiveQuality}-s${pair.maxImageSide}" else "original"
+
+            // Fast path: size and mtime unchanged, same compression settings -> skip without hashing
+            if (record != null && record.size == localSize && record.localMtime == localMtime &&
+                record.compressionSig == sig
+            ) {
+                continue
+            }
+
             val localMd5 = computeLocalMd5(docFile)
 
-            val needsUpload = if (remoteRes == null) {
-                true
-            } else {
+            // Content unchanged and already uploaded with the same settings -> skip
+            if (record != null && localMd5.isNotEmpty() && record.localMd5 == localMd5 &&
+                record.compressionSig == sig
+            ) {
+                db.fileRecordDao().insertOrUpdate(record.copy(localMtime = localMtime, size = localSize))
+                continue
+            }
+
+            // Legacy fallback (no DB record): trust cloud MD5 for originals only
+            val remoteRes = remoteFiles[relPath]
+            if (!useCompression && record == null && remoteRes != null) {
                 val remoteMd5 = remoteRes.md5.orEmpty()
-                if (remoteMd5.isNotEmpty() && localMd5.isNotEmpty()) {
-                    !remoteMd5.equals(localMd5, ignoreCase = true)
+                val same = if (remoteMd5.isNotEmpty() && localMd5.isNotEmpty()) {
+                    remoteMd5.equals(localMd5, ignoreCase = true)
                 } else {
-                    remoteRes.size != localSize
+                    remoteRes.size == localSize
+                }
+                if (same) {
+                    db.fileRecordDao().insertOrUpdate(
+                        FileRecord(
+                            id = "${pair.id}:$relPath",
+                            pairId = pair.id,
+                            relPath = relPath,
+                            localMd5 = localMd5,
+                            remoteMd5 = remoteMd5,
+                            localMtime = localMtime,
+                            remoteMtime = System.currentTimeMillis(),
+                            size = localSize,
+                            lastSyncTime = System.currentTimeMillis(),
+                            compressionSig = sig
+                        )
+                    )
+                    continue
                 }
             }
 
-            if (needsUpload) {
-                val targetRemotePath = "${pair.remotePath.trimEnd('/')}/$relPath"
+            // Try compression (temp file in cacheDir, original on phone untouched)
+            var tmp: File? = null
+            if (useCompression) {
+                _progressFlow.value = _progressFlow.value.copy(
+                    currentFileName = name,
+                    actionText = "\u0421\u0436\u0430\u0442\u0438\u0435 \u0444\u043e\u0442\u043e [$idx/$total]",
+                    processedFiles = idx,
+                    totalFiles = total
+                )
+                tmp = PhotoCompressor.compressToCache(
+                    context, docFile.uri, name, localSize, pair.effectiveQuality, pair.maxImageSide
+                )
+            }
+            val tmpFile = tmp
+
+            // Compression not possible and original already uploaded before -> skip
+            if (tmpFile == null && useCompression && record != null && localMd5.isNotEmpty() &&
+                record.localMd5 == localMd5 && record.compressionSig == "original"
+            ) {
+                continue
+            }
+
+            try {
+                val uploadRelPath: String
+                val uploadName: String
+                val uploadSize: Long
+                val streamProvider: () -> InputStream
+                if (tmpFile != null) {
+                    uploadName = name.substringBeforeLast('.') + ".jpg"
+                    uploadRelPath = if (relPath.contains('/')) {
+                        relPath.substringBeforeLast('/') + "/" + uploadName
+                    } else {
+                        uploadName
+                    }
+                    uploadSize = tmpFile.length()
+                    streamProvider = { FileInputStream(tmpFile) }
+                } else {
+                    uploadName = name
+                    uploadRelPath = relPath
+                    uploadSize = localSize
+                    streamProvider = { context.contentResolver.openInputStream(docFile.uri)!! }
+                }
+
+                val targetRemotePath = "${pair.remotePath.trimEnd('/')}/$uploadRelPath"
                 val dirPath = targetRemotePath.substringBeforeLast('/', "")
                 if (dirPath.isNotEmpty()) {
                     client.createFolder(dirPath)
                 }
 
                 _progressFlow.value = _progressFlow.value.copy(
-                    currentFileName = docFile.name.orEmpty(),
-                    actionText = "Загрузка в облако [$idx/$total]",
+                    currentFileName = uploadName,
+                    actionText = "\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0431\u043b\u0430\u043a\u043e [$idx/$total]",
                     currentBytes = 0,
-                    totalBytes = localSize,
+                    totalBytes = uploadSize,
                     processedFiles = idx,
                     totalFiles = total
                 )
 
-                log(LogLevel.INFO, "⬆ Загрузка: $relPath (${formatBytes(localSize)})")
+                if (tmpFile != null) {
+                    val saved = 100 - (uploadSize * 100 / localSize.coerceAtLeast(1))
+                    log(LogLevel.INFO, "\u2b06 \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 (\u0441\u0436\u0430\u0442\u043e): $uploadRelPath ${formatBytes(localSize)} -> ${formatBytes(uploadSize)} (-$saved%)")
+                } else {
+                    log(LogLevel.INFO, "\u2b06 \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430: $relPath (${formatBytes(localSize)})")
+                }
+
                 val success = client.uploadFile(
                     remotePath = targetRemotePath,
-                    contentLength = localSize,
-                    streamProvider = { context.contentResolver.openInputStream(docFile.uri)!! },
+                    contentLength = uploadSize,
+                    streamProvider = streamProvider,
                     overwrite = true,
                     onProgress = { written, tot ->
                         _progressFlow.value = _progressFlow.value.copy(
@@ -240,20 +329,24 @@ class SyncEngine(
                 )
                 if (success) {
                     count++
+                    val uploadedMd5 = if (tmpFile != null) computeFileMd5(tmpFile) else localMd5
                     db.fileRecordDao().insertOrUpdate(
                         FileRecord(
                             id = "${pair.id}:$relPath",
                             pairId = pair.id,
                             relPath = relPath,
                             localMd5 = localMd5,
-                            remoteMd5 = localMd5,
-                            localMtime = docFile.lastModified(),
+                            remoteMd5 = uploadedMd5,
+                            localMtime = localMtime,
                             remoteMtime = System.currentTimeMillis(),
                             size = localSize,
-                            lastSyncTime = System.currentTimeMillis()
+                            lastSyncTime = System.currentTimeMillis(),
+                            compressionSig = if (tmpFile != null) sig else "original"
                         )
                     )
                 }
+            } finally {
+                tmpFile?.delete()
             }
         }
         return count
@@ -541,6 +634,22 @@ class SyncEngine(
         }
     }
 
+    private fun computeFileMd5(file: File): String {
+        return try {
+            FileInputStream(file).use { input ->
+                val digest = MessageDigest.getInstance("MD5")
+                val buffer = ByteArray(65536)
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) {
+                    digest.update(buffer, 0, read)
+                }
+                digest.digest().joinToString("") { "%02x".format(it) }
+            }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     private fun isIgnored(name: String): Boolean {
         val ignoredNames = setOf(
             ".git", ".svn", "__pycache__", ".idea", ".vscode",
@@ -565,3 +674,4 @@ class SyncEngine(
         }
     }
 }
+

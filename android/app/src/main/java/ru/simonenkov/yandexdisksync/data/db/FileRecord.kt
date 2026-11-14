@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.data.db
+﻿package ru.simonenkov.yandexdisksync.data.db
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
@@ -13,5 +13,7 @@ data class FileRecord(
     val localMtime: Long,
     val remoteMtime: Long,
     val size: Long,
-    val lastSyncTime: Long
+    val lastSyncTime: Long,
+    val compressionSig: String? = null
 )
+

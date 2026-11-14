@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.ui.screens
+﻿package ru.simonenkov.yandexdisksync.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -162,6 +162,15 @@ fun FolderDetailCard(
                 }
             )
 
+            if (folder.compressPhotos && folder.mode == ru.simonenkov.yandexdisksync.data.SyncMode.UPLOAD_ONLY) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "\u0424\u043e\u0442\u043e \u0441\u0436\u0438\u043c\u0430\u044e\u0442\u0441\u044f: JPEG ${folder.effectiveQuality}%, " + if (folder.maxImageSide > 0) "\u0434\u043e ${folder.maxImageSide} px" else "\u0438\u0441\u0445\u043e\u0434\u043d\u044b\u0439 \u0440\u0430\u0437\u043c\u0435\u0440",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
             if (folder.lastSyncStatus.isNotBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
@@ -195,3 +204,4 @@ fun FolderDetailCard(
         }
     }
 }
+

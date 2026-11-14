@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.data
+﻿package ru.simonenkov.yandexdisksync.data
 
 import java.util.UUID
 
@@ -24,8 +24,14 @@ data class SyncFolderPair(
     val localReadablePath: String = "",
     val remotePath: String = "",
     val mode: SyncMode = SyncMode.TWO_WAY,
+    val compressPhotos: Boolean = false,
+    val jpegQuality: Int = 82,
+    val maxImageSide: Int = 2560,
     val enabled: Boolean = true,
     val lastSyncTime: Long = 0L,
     val lastSyncStatus: String = "Не выполнялась",
     val lastSyncFilesCount: Int = 0
-)
+) {
+    val effectiveQuality: Int get() = if (jpegQuality in 50..95) jpegQuality else 82
+}
+

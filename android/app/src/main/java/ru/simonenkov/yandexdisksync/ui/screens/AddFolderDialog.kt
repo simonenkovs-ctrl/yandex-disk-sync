@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.ui.screens
+﻿package ru.simonenkov.yandexdisksync.ui.screens
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -32,6 +32,9 @@ fun AddEditFolderDialog(
     var readablePath by remember { mutableStateOf(initialFolder?.localReadablePath.orEmpty()) }
     var remotePath by remember { mutableStateOf(initialFolder?.remotePath ?: "/PhoneSync/") }
     var selectedMode by remember { mutableStateOf(initialFolder?.mode ?: SyncMode.TWO_WAY) }
+    var compressPhotos by remember { mutableStateOf(initialFolder?.compressPhotos ?: false) }
+    var jpegQuality by remember { mutableStateOf(initialFolder?.effectiveQuality ?: 82) }
+    var maxImageSide by remember { mutableStateOf(initialFolder?.maxImageSide ?: 2560) }
 
     val openDocumentTreeLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -141,6 +144,40 @@ fun AddEditFolderDialog(
                         }
                     }
                 }
+
+                if (selectedMode == SyncMode.UPLOAD_ONLY) {
+                    Divider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("\u0421\u0436\u0438\u043c\u0430\u0442\u044c \u0444\u043e\u0442\u043e \u043f\u0440\u0438 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0435", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "\u042d\u043a\u043e\u043d\u043e\u043c\u0438\u0442 \u043c\u0435\u0441\u0442\u043e \u0432 \u043e\u0431\u043b\u0430\u043a\u0435. \u041e\u0440\u0438\u0433\u0438\u043d\u0430\u043b\u044b \u043d\u0430 \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u0435 \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u044f\u044e\u0442\u0441\u044f. \u0422\u043e\u043b\u044c\u043a\u043e \u0444\u043e\u0442\u043e JPEG/HEIC.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = compressPhotos, onCheckedChange = { compressPhotos = it })
+                    }
+                    if (compressPhotos) {
+                        Text("\u041a\u0430\u0447\u0435\u0441\u0442\u0432\u043e JPEG: $jpegQuality%", style = MaterialTheme.typography.labelMedium)
+                        Slider(
+                            value = jpegQuality.toFloat(),
+                            onValueChange = { jpegQuality = it.toInt() },
+                            valueRange = 50f..95f,
+                            steps = 8
+                        )
+                        Text("\u0420\u0430\u0437\u043c\u0435\u0440 \u043f\u043e \u0434\u043b\u0438\u043d\u043d\u043e\u0439 \u0441\u0442\u043e\u0440\u043e\u043d\u0435", style = MaterialTheme.typography.labelMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(0 to "\u041e\u0440\u0438\u0433\u0438\u043d\u0430\u043b", 1920 to "1920", 2560 to "2560", 3840 to "3840").forEach { (side, label) ->
+                                FilterChip(
+                                    selected = maxImageSide == side,
+                                    onClick = { maxImageSide = side },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -152,7 +189,10 @@ fun AddEditFolderDialog(
                             localTreeUri = selectedUri,
                             localReadablePath = readablePath,
                             remotePath = if (remotePath.startsWith("/")) remotePath else "/$remotePath",
-                            mode = selectedMode
+                            mode = selectedMode,
+                            compressPhotos = compressPhotos,
+                            jpegQuality = jpegQuality,
+                            maxImageSide = maxImageSide
                         )
                         onSave(folder)
                     }
@@ -169,3 +209,4 @@ fun AddEditFolderDialog(
         }
     )
 }
+

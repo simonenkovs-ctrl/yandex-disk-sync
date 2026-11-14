@@ -1,4 +1,4 @@
-package ru.simonenkov.yandexdisksync.data
+﻿package ru.simonenkov.yandexdisksync.data
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -82,7 +82,7 @@ class AppPreferences(context: Context) {
         val json = prefs.getString(KEY_FOLDERS, null) ?: return emptyList()
         return try {
             val type = object : TypeToken<List<SyncFolderPair>>() {}.type
-            gson.fromJson<List<SyncFolderPair>>(json, type) ?: emptyList()
+            (gson.fromJson<List<SyncFolderPair>>(json, type) ?: emptyList()).map { if (it.jpegQuality in 50..95) it else it.copy(jpegQuality = 82) }
         } catch (e: Exception) {
             emptyList()
         }
@@ -96,3 +96,4 @@ class AppPreferences(context: Context) {
         private const val KEY_WIFI_ONLY = "wifi_only"
     }
 }
+
