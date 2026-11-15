@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-class AppPreferences(context: Context) {
+class AppPreferences(private val context: Context) {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("yandex_disk_sync_prefs", Context.MODE_PRIVATE)
@@ -23,7 +23,10 @@ class AppPreferences(context: Context) {
 
     var oauthToken: String
         get() = prefs.getString(KEY_TOKEN, "").orEmpty()
-        set(value) = prefs.edit().putString(KEY_TOKEN, value.trim()).apply()
+        set(value) {
+            prefs.edit().putString(KEY_TOKEN, value.trim()).apply()
+            BackupManager.saveBackup(context, this)
+        }
 
     var conflictResolution: String
         get() = prefs.getString(KEY_CONFLICT, "keep_both").orEmpty()
@@ -31,27 +34,45 @@ class AppPreferences(context: Context) {
 
     var syncDeletions: Boolean
         get() = prefs.getBoolean(KEY_SYNC_DELETIONS, true)
-        set(value) = prefs.edit().putBoolean(KEY_SYNC_DELETIONS, value).apply()
+        set(value) {
+            prefs.edit().putBoolean(KEY_SYNC_DELETIONS, value).apply()
+            BackupManager.saveBackup(context, this)
+        }
 
     var wifiOnly: Boolean
         get() = prefs.getBoolean(KEY_WIFI_ONLY, false)
-        set(value) = prefs.edit().putBoolean(KEY_WIFI_ONLY, value).apply()
+        set(value) {
+            prefs.edit().putBoolean(KEY_WIFI_ONLY, value).apply()
+            BackupManager.saveBackup(context, this)
+        }
 
     var dailySyncEnabled: Boolean
         get() = prefs.getBoolean(KEY_DAILY_SYNC_ENABLED, false)
-        set(value) = prefs.edit().putBoolean(KEY_DAILY_SYNC_ENABLED, value).apply()
+        set(value) {
+            prefs.edit().putBoolean(KEY_DAILY_SYNC_ENABLED, value).apply()
+            BackupManager.saveBackup(context, this)
+        }
 
     var dailySyncHour: Int
         get() = prefs.getInt(KEY_DAILY_SYNC_HOUR, 3) // по умолчанию 03:00 ночи
-        set(value) = prefs.edit().putInt(KEY_DAILY_SYNC_HOUR, value).apply()
+        set(value) {
+            prefs.edit().putInt(KEY_DAILY_SYNC_HOUR, value).apply()
+            BackupManager.saveBackup(context, this)
+        }
 
     var dailySyncMinute: Int
         get() = prefs.getInt(KEY_DAILY_SYNC_MINUTE, 0)
-        set(value) = prefs.edit().putInt(KEY_DAILY_SYNC_MINUTE, value).apply()
+        set(value) {
+            prefs.edit().putInt(KEY_DAILY_SYNC_MINUTE, value).apply()
+            BackupManager.saveBackup(context, this)
+        }
 
     var dailySyncRequiresCharging: Boolean
         get() = prefs.getBoolean(KEY_DAILY_SYNC_REQUIRES_CHARGING, false)
-        set(value) = prefs.edit().putBoolean(KEY_DAILY_SYNC_REQUIRES_CHARGING, value).apply()
+        set(value) {
+            prefs.edit().putBoolean(KEY_DAILY_SYNC_REQUIRES_CHARGING, value).apply()
+            BackupManager.saveBackup(context, this)
+        }
 
     fun getFolders(): List<SyncFolderPair> {
         return loadFolders()
@@ -61,6 +82,7 @@ class AppPreferences(context: Context) {
         val json = gson.toJson(folders)
         prefs.edit().putString(KEY_FOLDERS, json).apply()
         _foldersFlow.value = folders
+        BackupManager.saveBackup(context, this)
     }
 
     fun addOrUpdateFolder(folder: SyncFolderPair) {

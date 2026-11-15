@@ -19,6 +19,10 @@ class YandexDiskApp : Application() {
     override fun onCreate() {
         super.onCreate()
         preferences = AppPreferences(this)
+
+        // Автоматическое восстановление настроек после переустановки
+        ru.simonenkov.yandexdisksync.data.BackupManager.restoreIfNeeded(this, preferences)
+
         database = AppDatabase.getInstance(this)
         syncEngine = SyncEngine(this, preferences, database)
 

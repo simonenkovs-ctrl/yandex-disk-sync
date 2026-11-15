@@ -239,16 +239,29 @@ class SyncEngine(
                 continue
             }
 
-            // Legacy fallback (no DB record): trust cloud MD5 for originals only
-            val remoteRes = remoteFiles[relPath]
-            if (!useCompression && record == null && remoteRes != null) {
+            // Legacy fallback (no DB record): trust cloud files to avoid re-uploading on fresh install
+            val expectedRemotePath = if (useCompression) {
+                val uploadName = name.substringBeforeLast('.') + ".jpg"
+                if (relPath.contains('/')) relPath.substringBeforeLast('/') + "/" + uploadName else uploadName
+            } else {
+                relPath
+            }
+            val remoteRes = remoteFiles[expectedRemotePath] ?: remoteFiles[relPath]
+
+            if (record == null && remoteRes != null) {
                 val remoteMd5 = remoteRes.md5.orEmpty()
-                val same = if (remoteMd5.isNotEmpty() && localMd5.isNotEmpty()) {
-                    remoteMd5.equals(localMd5, ignoreCase = true)
+                val alreadyUploaded = if (useCompression) {
+                    // При сжатии размер в облаке меньше, но файл уже там есть
+                    remoteRes.size > 0 && remoteRes.size <= localSize
                 } else {
-                    remoteRes.size == localSize
+                    if (remoteMd5.isNotEmpty() && localMd5.isNotEmpty()) {
+                        remoteMd5.equals(localMd5, ignoreCase = true)
+                    } else {
+                        remoteRes.size == localSize
+                    }
                 }
-                if (same) {
+
+                if (alreadyUploaded) {
                     db.fileRecordDao().insertOrUpdate(
                         FileRecord(
                             id = "${pair.id}:$relPath",
