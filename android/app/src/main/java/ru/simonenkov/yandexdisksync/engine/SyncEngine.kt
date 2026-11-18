@@ -169,7 +169,7 @@ class SyncEngine(
         return DeletionGate(blockedLocal, blockedRemote)
     }
 
-        // Existing code unchanged up to deletion gate creation
+    private suspend fun syncFolderPair(pair: SyncFolderPair, client: YandexDiskClient) {
 
         _progressFlow.value = _progressFlow.value.copy(
             currentFolderName = pair.displayName,
@@ -248,16 +248,12 @@ class SyncEngine(
         var syncedCount = 0
 
 
-        val dispatch = {
-            when (pair.mode) {
+        try {
+            syncedCount = when (pair.mode) {
                 SyncMode.UPLOAD_ONLY -> handleUploadOnly(pair, client, localFiles, remoteFiles)
                 SyncMode.DOWNLOAD_ONLY -> handleDownloadOnly(pair, client, rootDoc, localFiles, remoteFiles)
                 SyncMode.TWO_WAY -> handleTwoWay(pair, client, rootDoc, localFiles, remoteFiles, deletionGate)
             }
-        }
-
-        try {
-            syncedCount = dispatch()
         } catch (e: kotlinx.coroutines.CancellationException) {
             log(LogLevel.WARNING, "Папка [" + pair.displayName + "] остановлена")
             prefs.updateFolderSyncResult(pair.id, "Отменена", 0)
@@ -767,7 +763,7 @@ class SyncEngine(
         if (stream == null) return ""
         return try {
             stream.use { input -> hashStream(input, algorithm) }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             log(LogLevel.WARNING, LogTag.HASH_FAILED + " " + algorithm)
             ""
         }
