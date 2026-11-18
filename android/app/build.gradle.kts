@@ -5,28 +5,12 @@
     alias(libs.plugins.ksp)
 }
 
-// Release signing is configured via local.properties (git-ignored):
-//   keystore.storePassword=...
-//   keystore.keyAlias=...
-//   keystore.keyPassword=...
-// In CI the same properties are written from GitHub Actions secrets.
+// Release signing is configured with fallback to permanent repository keystore:
 val keystoreFile = file("release.keystore")
-val keystoreStorePassword = findProperty("keystore.storePassword") as String?
-val keystoreKeyAlias = findProperty("keystore.keyAlias") as String?
-val keystoreKeyPassword = findProperty("keystore.keyPassword") as String?
-val releaseSigningAvailable =
-    keystoreFile.exists() &&
-        !keystoreStorePassword.isNullOrBlank() &&
-        !keystoreKeyAlias.isNullOrBlank() &&
-        !keystoreKeyPassword.isNullOrBlank()
-
-if (!releaseSigningAvailable) {
-    logger.warn(
-        "Release signing is not configured: 'release.keystore' is missing or " +
-            "keystore.storePassword / keystore.keyAlias / keystore.keyPassword are not set in local.properties. " +
-            "Release APKs cannot be built until it is provided. Debug builds fall back to the default debug key."
-    )
-}
+val keystoreStorePassword = (findProperty("keystore.storePassword") as String?)?.ifBlank { null } ?: "yandexsync2026"
+val keystoreKeyAlias = (findProperty("keystore.keyAlias") as String?)?.ifBlank { null } ?: "1"
+val keystoreKeyPassword = (findProperty("keystore.keyPassword") as String?)?.ifBlank { null } ?: "yandexsync2026"
+val releaseSigningAvailable = keystoreFile.exists()
 
 android {
     namespace = "ru.simonenkov.yandexdisksync"
@@ -36,8 +20,8 @@ android {
         applicationId = "ru.simonenkov.yandexdisksync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.3.5"
+        versionCode = 10
+        versionName = "1.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -126,7 +110,3 @@ dependencies {
 
     debugImplementation(libs.androidx.ui.tooling)
 }
-
-
-
-
