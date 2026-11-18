@@ -21,4 +21,7 @@ interface FileRecordDao {
 
     @Query("DELETE FROM file_records WHERE pairId = :pairId")
     suspend fun deleteAllForPair(pairId: String)
+
+    @Query("SELECT COUNT(*) FROM file_records WHERE pairId = :pairId")
+    suspend fun countForPair(pairId: String): Int
 }

@@ -1,0 +1,11 @@
+# Пример конфигурации для локальной сборки.
+# Скопируйте этот файл в local.properties (local.properties находится в .gitignore).
+# Android Studio автоматически создает local.properties и записывает sdk.dir.
+
+# Путь к Android SDK (добавляется автоматически Android Studio)
+# sdk.dir=C\:\\Users\\<your_user>\\AppData\\Local\\Android\\Sdk
+
+# Подпись release-сборки (значения для app/release.keystore)
+keystore.storePassword=
+keystore.keyAlias=1
+keystore.keyPassword=

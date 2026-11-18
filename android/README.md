@@ -37,13 +37,14 @@
 ## 🛠 Как собрать APK
 
 ### Способ 1: Автоматическая облачная сборка через GitHub Actions (Рекомендуется)
-В проект уже добавлен готовый workflow: `.github/workflows/build-apk.yml`.
+В проект уже добавлен готовый workflow: `.github/workflows/build-apk.yml` (в корне репозитория).
 1. Сделайте `git push` в ваш репозиторий GitHub.
 2. Во вкладке **Actions** в репозитории запустится сборка `Build Android APK`.
-3. Через ~1.5 минуты в блоке **Artifacts** будет готов файл `yandex-disk-sync-debug-apk.zip` с готовым APK-файлом для установки на телефон.
+3. Через 2-3 минуты в блоке **Artifacts** будет готов файл `yandex-disk-sync-apk.zip` с debug- и (при настроенных секретах подписи в GitHub) release-APK для установки на телефон.
 
 ### Способ 2: Сборка через Android Studio
 1. Откройте папку `D:\yandex-disk-sync-1.2.2\android` в Android Studio.
 2. Дождитесь автоматической синхронизации Gradle.
-3. В верхнем меню выберите: **Build ➔ Build Bundle(s) / APK(s) ➔ Build APK(s)**.
-4. Готовый APK появится в папке `app/build/outputs/apk/debug/app-debug.apk`.
+3. Для подписанной release-сборки: скопируйте `local.properties.example` в `local.properties` и заполните свойства `keystore.*` (без этого debug-сборка работает как обычно).
+4. В верхнем меню выберите: **Build ➔ Build Bundle(s) / APK(s) ➔ Build APK(s)**.
+5. Готовый APK появится в папке `app/build/outputs/apk/debug/app-debug.apk`.

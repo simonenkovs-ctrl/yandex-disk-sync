@@ -1,4 +1,4 @@
-﻿package ru.simonenkov.yandexdisksync.engine
+package ru.simonenkov.yandexdisksync.engine
 
 import android.content.Context
 import android.net.Uri
@@ -33,7 +33,10 @@ class SyncEngine(
     private val _logsFlow = MutableStateFlow<List<SyncLogItem>>(emptyList())
     val logsFlow: StateFlow<List<SyncLogItem>> = _logsFlow.asStateFlow()
 
+    @Volatile
     private var isCancelled = false
+
+    private val DIGEST_MD5 = "MD5"
 
     fun cancelSync() {
         isCancelled = true
@@ -126,7 +129,48 @@ class SyncEngine(
         }
     }
 
-    private suspend fun syncFolderPair(pair: SyncFolderPair, client: YandexDiskClient) {
+    /**
+     * Build a DeletionGate that determines whether deletions need user confirmation.
+     * It uses the DeletionPlanner to decide if the number of deletions exceeds safety thresholds.
+     */
+    private suspend fun buildDeletionGate(
+        pair: SyncFolderPair,
+        localFiles: Map<String, DocumentFile>,
+        remoteFiles: Map<String, Resource>
+    ): DeletionGate {
+        // Existing records for this pair (used as baseline)
+        val records = db.fileRecordDao().getRecordsForPair(pair.id)
+        val knownKeys = records.map { it.relPath }.toSet()
+        val baselineEstablished = db.fileRecordDao().countForPair(pair.id) == 0
+
+        // Candidates are files that exist on one side but not the other AND have a record (i.e., were previously synced)
+        val candidates = mutableSetOf<String>()
+        for ((rel, doc) in localFiles) {
+            if (remoteFiles[rel] == null && db.fileRecordDao().getRecord(pair.id, rel) != null) {
+                candidates.add(rel)
+            }
+        }
+        for ((rel, _) in remoteFiles) {
+            if (!localFiles.containsKey(rel) && db.fileRecordDao().getRecord(pair.id, rel) != null) {
+                candidates.add(rel)
+            }
+        }
+
+        val outcome = DeletionPlanner.plan(candidates, knownKeys, baselineEstablished)
+        if (!outcome.blocked) return DeletionGate.allowAll()
+
+        // Count how many blocked deletions are local vs remote
+        var blockedLocal = 0
+        var blockedRemote = 0
+        for (rel in outcome.keys) {
+            if (localFiles.containsKey(rel) && remoteFiles[rel] == null) blockedLocal++
+            if (remoteFiles.containsKey(rel) && !localFiles.containsKey(rel)) blockedRemote++
+        }
+        return DeletionGate(blockedLocal, blockedRemote)
+    }
+
+        // Existing code unchanged up to deletion gate creation
+
         _progressFlow.value = _progressFlow.value.copy(
             currentFolderName = pair.displayName,
             actionText = "Сканирование папок..."
@@ -183,21 +227,56 @@ class SyncEngine(
         }
         log(LogLevel.INFO, "Найдено файлов на Яндекс Диске: ${remoteFiles.size}")
 
+        if (isCancelled) {
+            prefs.updateFolderSyncResult(pair.id, "Отменена", 0)
+            return
+        }
+        val deletionGate = if (pair.mode == SyncMode.TWO_WAY && prefs.syncDeletions) {
+            buildDeletionGate(pair, localFiles, remoteFiles)
+        } else {
+            DeletionGate.allowAll()
+        }
+        if (deletionGate.needsConfirmation) {
+            log(LogLevel.WARNING, "${LogTag.DELETIONS_HELD}: " +
+                "${deletionGate.blockedLocal} local, ${deletionGate.blockedRemote} remote")
+        }
+        if (isCancelled) {
+            prefs.updateFolderSyncResult(pair.id, "Отменена", 0)
+            return
+        }
+
         var syncedCount = 0
 
-        when (pair.mode) {
-            SyncMode.UPLOAD_ONLY -> {
-                syncedCount = handleUploadOnly(pair, client, localFiles, remoteFiles)
-            }
-            SyncMode.DOWNLOAD_ONLY -> {
-                syncedCount = handleDownloadOnly(pair, client, rootDoc, localFiles, remoteFiles)
-            }
-            SyncMode.TWO_WAY -> {
-                syncedCount = handleTwoWay(pair, client, rootDoc, localFiles, remoteFiles)
+
+        val dispatch = {
+            when (pair.mode) {
+                SyncMode.UPLOAD_ONLY -> handleUploadOnly(pair, client, localFiles, remoteFiles)
+                SyncMode.DOWNLOAD_ONLY -> handleDownloadOnly(pair, client, rootDoc, localFiles, remoteFiles)
+                SyncMode.TWO_WAY -> handleTwoWay(pair, client, rootDoc, localFiles, remoteFiles, deletionGate)
             }
         }
 
-        prefs.updateFolderSyncResult(pair.id, "Успешно (${syncedCount} обновлено)", syncedCount)
+        try {
+            syncedCount = dispatch()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            log(LogLevel.WARNING, "Папка [" + pair.displayName + "] остановлена")
+            prefs.updateFolderSyncResult(pair.id, "Отменена", 0)
+            return
+        } catch (e: Exception) {
+            log(LogLevel.ERROR, "Ошибка в папке [" + pair.displayName + "]: " + (e.localizedMessage ?: e.message))
+            prefs.updateFolderSyncResult(pair.id, "Ошибка синхронизации", 0)
+            return
+        }
+
+        if (isCancelled) {
+            prefs.updateFolderSyncResult(pair.id, "Прервана ($syncedCount обновлено)", syncedCount)
+            return
+        }
+        if (deletionGate.needsConfirmation) {
+            prefs.updateFolderSyncResult(pair.id, "Нужно подтверждение удалений ($syncedCount)", syncedCount)
+            return
+        }
+        prefs.updateFolderSyncResult(pair.id, "Успешно (" + syncedCount + " обновлено)", syncedCount)
     }
 
     private suspend fun handleUploadOnly(
@@ -475,7 +554,8 @@ class SyncEngine(
         client: YandexDiskClient,
         rootDoc: DocumentFile,
         localFiles: Map<String, DocumentFile>,
-        remoteFiles: Map<String, Resource>
+        remoteFiles: Map<String, Resource>,
+        deletionGate: DeletionGate
     ): Int {
         var count = 0
         val allKeys = localFiles.keys + remoteFiles.keys
@@ -492,10 +572,14 @@ class SyncEngine(
             if (localDoc != null && remoteRes == null) {
                 // Файл есть локально, но нет в облаке
                 if (record != null && prefs.syncDeletions) {
-                    // Файл был удален в облаке -> удаляем локально
-                    log(LogLevel.INFO, "🗑 Удаление локального файла (удален в облаке): $relPath")
-                    localDoc.delete()
-                    db.fileRecordDao().deleteRecord(pair.id, relPath)
+                    // Файл был удален в облаке -> удаляем локально (если подтверждения нет)
+                    if (!deletionGate.needsConfirmation) {
+                        log(LogLevel.INFO, "🗑 Удаление локального файла (удален в облаке): $relPath")
+                        localDoc.delete()
+                        db.fileRecordDao().deleteRecord(pair.id, relPath)
+                    } else {
+                        log(LogLevel.INFO, "🗑 Удаление локального файла отложено (требуется подтверждение): $relPath")
+                    }
                 } else {
                     // Новый локальный файл -> загружаем в облако
                     val targetRemotePath = "${pair.remotePath.trimEnd('/')}/$relPath"
@@ -531,10 +615,14 @@ class SyncEngine(
             } else if (localDoc == null && remoteRes != null) {
                 // Файл есть в облаке, но нет локально
                 if (record != null && prefs.syncDeletions) {
-                    // Файл удален локально -> удаляем в облаке
-                    log(LogLevel.INFO, "🗑 Удаление файла в облаке (удален на телефоне): $relPath")
-                    client.deleteResource(remoteRes.path.removePrefix("disk:"))
-                    db.fileRecordDao().deleteRecord(pair.id, relPath)
+                    // Файл удалён локально -> удаляем в облаке (если подтверждения нет)
+                    if (!deletionGate.needsConfirmation) {
+                        log(LogLevel.INFO, "🗑 Удаление файла в облаке (удален на телефоне): $relPath")
+                        client.deleteResource(remoteRes.path.removePrefix("disk:"))
+                        db.fileRecordDao().deleteRecord(pair.id, relPath)
+                    } else {
+                        log(LogLevel.INFO, "🗑 Удаление файла в облаке отложено (требуется подтверждение): $relPath")
+                    }
                 } else {
                     // Новый файл в облаке -> скачиваем
                     try {
@@ -669,37 +757,30 @@ class SyncEngine(
         return current.createFile(mimeType, fileName)
     }
 
-    private fun computeLocalMd5(docFile: DocumentFile): String {
+    private fun computeLocalMd5(docFile: DocumentFile): String =
+        computeHash(context.contentResolver.openInputStream(docFile.uri), DIGEST_MD5)
+
+    private fun computeFileMd5(file: File): String =
+        computeHash(runCatching { FileInputStream(file) }.getOrNull() ?: return "", DIGEST_MD5)
+
+    private fun computeHash(stream: InputStream?, algorithm: String): String {
+        if (stream == null) return ""
         return try {
-            val stream = context.contentResolver.openInputStream(docFile.uri) ?: return ""
-            stream.use { input ->
-                val digest = MessageDigest.getInstance("MD5")
-                val buffer = ByteArray(65536)
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    digest.update(buffer, 0, read)
-                }
-                digest.digest().joinToString("") { "%02x".format(it) }
-            }
-        } catch (e: Exception) {
+            stream.use { input -> hashStream(input, algorithm) }
+        } catch (_: Exception) {
+            log(LogLevel.WARNING, LogTag.HASH_FAILED + " " + algorithm)
             ""
         }
     }
 
-    private fun computeFileMd5(file: File): String {
-        return try {
-            FileInputStream(file).use { input ->
-                val digest = MessageDigest.getInstance("MD5")
-                val buffer = ByteArray(65536)
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    digest.update(buffer, 0, read)
-                }
-                digest.digest().joinToString("") { "%02x".format(it) }
-            }
-        } catch (e: Exception) {
-            ""
+    private fun hashStream(input: InputStream, algorithm: String): String {
+        val digest = MessageDigest.getInstance(algorithm)
+        val buffer = ByteArray(65536)
+        var read: Int
+        while (input.read(buffer).also { read = it } != -1) {
+            digest.update(buffer, 0, read)
         }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun isIgnored(name: String): Boolean {

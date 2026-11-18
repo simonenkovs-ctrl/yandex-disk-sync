@@ -1,4 +1,4 @@
-# Ignore build artefacts
+# --- Desktop (Python) build artefacts ---
 __pycache__/
 *.pyc
 build/
@@ -7,8 +7,27 @@ build/
 sync_state.db
 # Dist folder (compiled executable and zip)
 dist/
-# IDE files
+
+# --- IDE ---
 .vscode/
 .idea/
-# Secrets – not needed because config.json is already in repo, but you may want to keep token out
+*.iml
+
+# --- Desktop secrets (keep tokens out of the repo) ---
 config.json
+
+# --- Android / Gradle ---
+.gradle/
+local.properties
+.kotlin/
+captures/
+*.apk
+*.aab
+
+# --- Android signing (keystore is stored as a GitHub Actions secret) ---
+*.keystore
+*.jks
+
+# --- Downloaded APK artefacts (CI artifacts / release copies) ---
+android/apk/
+android/apk_v*/

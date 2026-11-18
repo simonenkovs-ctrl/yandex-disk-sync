@@ -1,6 +1,6 @@
 # 📱 Документация проекта: Яндекс Диск Синхронизатор для Android
 
-> **Версия:** 1.3.4 (Android Edition)  
+> **Версия:** 1.3.5 (Android Edition)  
 > **Платформа:** Android (API 26+ / Android 8.0 — 15.0)  
 > **Стек технологий:** Kotlin 2.0, Jetpack Compose, Material 3, Coroutines & Flow, AndroidX WorkManager, Room SQLite, OkHttp 4, AndroidX DocumentFile (SAF)  
 > **Репозиторий:** `simonenkovs-ctrl/yandex-disk-sync` (ветка `android`)
@@ -27,6 +27,7 @@
    - [5.5. Обновление приложения в 1 клик](#55-обновление-приложения-в-1-клик)
    - [5.6. Сжатие фотографий перед загрузкой](#56-сжатие-фотографий-перед-загрузкой)
    - [5.7. Автоматическая ежедневная синхронизация](#57-автоматическая-ежедневная-синхронизация)
+   - [5.8. Автоматический бэкап настроек](#58-автоматический-бэкап-настроек)
 6. [Руководство разработчика и сборка](#6-руководство-разработчика-и-сборка)
    - [6.1. Автоматическая сборка в GitHub Actions](#61-автоматическая-сборка-в-github-actions)
    - [6.2. Локальная сборка в Android Studio](#62-локальная-сборка-в-android-studio)
@@ -67,6 +68,7 @@ ru.simonenkov.yandexdisksync/
 ├── data/                 # Состояние и локальные хранилища
 │   ├── SyncFolderPair.kt # Модель пары папок и перечисление SyncMode
 │   ├── AppPreferences.kt # Настройки в SharedPreferences (JSON Gson)
+│   ├── BackupManager.kt  # Автобэкап/восстановление настроек (JSON в 3 местах)
 │   └── db/               # База данных Room (SQLite)
 │       ├── FileRecord.kt
 │       ├── FileRecordDao.kt
@@ -131,6 +133,12 @@ ru.simonenkov.yandexdisksync/
 
 3. **`AppPreferences`**:
    - Потокобезопасное хранение токена, настроек и списка папок с реактивным обновлением UI через Kotlin `StateFlow`.
+
+4. **`BackupManager`**:
+   - Автоматически сохраняет резервную копию настроек (OAuth-токен, список папок, все параметры синхронизации) в JSON.
+   - Записывает копию в три места: внешнюю папку приложения (`/sdcard/Android/data/<package>/files`), публичную папку `Documents` и внутреннюю память приложения (fallback).
+   - При чистой установке (нет ни токена, ни папок) автоматически восстанавливает настройки из найденной резервной копии.
+   - Дополнительно в манифесте включен `android:allowBackup="true"` — данные приложения участвуют в стандартном автобэкапе Android.
 
 ---
 
@@ -293,10 +301,19 @@ ru.simonenkov.yandexdisksync/
 
 ---
 
+### 5.8. Автоматический бэкап настроек (v1.3.5)
+
+Приложение застраховано от потери настроек после переустановки или очистки данных:
+- При изменении настроек (токен, папки, параметры синхронизации) резервная копия `yandex_sync_backup.json` записывается в три независимых места хранения.
+- Если приложение было переустановлено, при первом запуске настройки (включая OAuth-токен и список папок) восстанавливаются автоматически — вводить их заново не нужно.
+- Права SAF на выбранные папки сохраняются на уровне системы, поэтому после переустановки приложение продолжает работу с теми же папками.
+
+---
+
 ## 6. Руководство разработчика и сборка
 
 ### 6.1. Автоматическая сборка в GitHub Actions
-Сборка полностью автоматизирована через workflow-файл [`.github/workflows/build-apk.yml`](file:///D:/yandex-disk-sync-1.2.2/.github/workflows/build-apk.yml).
+Сборка полностью автоматизирована через workflow-файл [`.github/workflows/build-apk.yml`](file:///D:/yandex-disk-sync-1.2.2/.github/workflows/build-apk.yml) (файл лежит **в корне репозитория** — GitHub Actions исполняет workflow только из корневого `.github/workflows/`).
 
 - **Триггер:** любой `git push` в ветку `android` или `master`.
 - **Окружение:** `ubuntu-latest`, OpenJDK 17.
@@ -304,14 +321,32 @@ ru.simonenkov.yandexdisksync/
   ```bash
   cd android
   gradle wrapper
-  ./gradlew assembleDebug --no-daemon
+  ./gradlew assembleDebug assembleRelease --no-daemon
   ```
-- **Результат:** готовый APK-файл автоматически прикрепляется к артефактам сборки в репозитории GitHub.
+- **Подпись release-APK:** выполняется из секретов GitHub (таблица ниже). Если секреты не заданы, CI собирает только debug-APK с предупреждением.
+- **Результат:** готовые APK автоматически прикрепляются к артефакту `yandex-disk-sync-apk` в репозитории GitHub.
+
+#### Секреты CI (Settings → Secrets and variables → Actions)
+
+| Секрет | Назначение |
+|---|---|
+| `KEYSTORE_STORE_PASSWORD` | Пароль хранилища `release.keystore` |
+| `KEYSTORE_KEY_ALIAS` | Алиас ключа (по умолчанию `1`) |
+| `KEYSTORE_KEY_PASSWORD` | Пароль ключа |
+| `KEYSTORE_BASE64` | Файл `release.keystore`, закодированный в base64 |
+
+Сгенерировать значение `KEYSTORE_BASE64` (PowerShell):
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("D:\yandex-disk-sync-1.2.2\android\app\release.keystore"))
+```
+
+> **Важно:** файл `release.keystore` и пароли к нему **не хранятся в репозитории** — они в `.gitignore`. Локальная копия `release.keystore` обязана остаться на вашей машине — без нее невозможно подписать release-сборку (в т.ч. в CI).
 
 ### 6.2. Локальная сборка в Android Studio
 1. Откройте Android Studio.
 2. Выберите **File ➔ Open** и укажите папку `D:\yandex-disk-sync-1.2.2\android`.
 3. Дождитесь автоматической загрузки зависимостей Gradle (Sync Project with Gradle Files).
-4. Выберите в верхнем меню: **Build ➔ Build Bundle(s) / APK(s) ➔ Build APK(s)**.
-5. Готовый файл появится в каталоге:
+4. Только для подписанной release-сборки: скопируйте `local.properties.example` в `local.properties` и заполните свойства `keystore.*`. Без этого debug-сборка работает как обычно, а release-сборка не сможет быть подписана.
+5. Выберите в верхнем меню: **Build ➔ Build Bundle(s) / APK(s) ➔ Build APK(s)**.
+6. Готовый файл появится в каталоге:
    `app/build/outputs/apk/debug/app-debug.apk`.

@@ -25,20 +25,47 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Android APK
+      - name: Configure release signing
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          {
+            echo "keystore.storePassword=${KEYSTORE_STORE_PASSWORD}"
+            echo "keystore.keyAlias=${KEYSTORE_KEY_ALIAS}"
+            echo "keystore.keyPassword=${KEYSTORE_KEY_PASSWORD}"
+          } >> android/local.properties
+        env:
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+
+      - name: Restore release keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${KEYSTORE_BASE64}" | base64 -d > android/app/release.keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
+      - name: Build APKs
         run: |
           cd android
           gradle wrapper
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
+          else
+            echo "::warning::Key store secrets are not configured - building debug APK only"
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          fi
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
 
       - name: List generated APKs
         run: |
           find . -name "*.apk" -ls
 
-      - name: Upload Debug APK Artifact
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: yandex-disk-sync-debug-apk
+          name: yandex-disk-sync-apk
           path: "**/build/outputs/apk/**/*.apk"
           retention-days: 30

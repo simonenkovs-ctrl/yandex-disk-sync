@@ -6,6 +6,11 @@ data class SyncLogItem(
     val message: String = ""
 )
 
+object LogTag {
+    const val HASH_FAILED = "HASH_FAILED"
+    const val DELETIONS_HELD = "DELETIONS_HELD"
+}
+
 enum class LogLevel {
     INFO, SUCCESS, WARNING, ERROR
 }

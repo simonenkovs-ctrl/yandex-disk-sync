@@ -5,6 +5,29 @@
     alias(libs.plugins.ksp)
 }
 
+// Release signing is configured via local.properties (git-ignored):
+//   keystore.storePassword=...
+//   keystore.keyAlias=...
+//   keystore.keyPassword=...
+// In CI the same properties are written from GitHub Actions secrets.
+val keystoreFile = file("release.keystore")
+val keystoreStorePassword = findProperty("keystore.storePassword") as String?
+val keystoreKeyAlias = findProperty("keystore.keyAlias") as String?
+val keystoreKeyPassword = findProperty("keystore.keyPassword") as String?
+val releaseSigningAvailable =
+    keystoreFile.exists() &&
+        !keystoreStorePassword.isNullOrBlank() &&
+        !keystoreKeyAlias.isNullOrBlank() &&
+        !keystoreKeyPassword.isNullOrBlank()
+
+if (!releaseSigningAvailable) {
+    logger.warn(
+        "Release signing is not configured: 'release.keystore' is missing or " +
+            "keystore.storePassword / keystore.keyAlias / keystore.keyPassword are not set in local.properties. " +
+            "Release APKs cannot be built until it is provided. Debug builds fall back to the default debug key."
+    )
+}
+
 android {
     namespace = "ru.simonenkov.yandexdisksync"
     compileSdk = 35
@@ -23,27 +46,34 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = file("release.keystore")
-            storePassword = "yandexsync2026"
-            keyAlias = "1"
-            keyPassword = "yandexsync2026"
-            enableV1Signing = true
-            enableV2Signing = true
+        if (releaseSigningAvailable) {
+            create("release") {
+                storeFile = keystoreFile
+                storePassword = keystoreStorePassword
+                keyAlias = keystoreKeyAlias
+                keyPassword = keystoreKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+            }
         }
     }
 
     buildTypes {
+        val releaseSigning = signingConfigs.findByName("release")
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (releaseSigning != null) {
+                signingConfig = releaseSigning
+            }
         }
         debug {
-            signingConfig = signingConfigs.getByName("release")
+            if (releaseSigning != null) {
+                signingConfig = releaseSigning
+            }
         }
     }
 
