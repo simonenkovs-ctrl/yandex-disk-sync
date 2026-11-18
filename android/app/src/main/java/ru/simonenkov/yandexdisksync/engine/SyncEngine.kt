@@ -756,8 +756,10 @@ class SyncEngine(
     private fun computeLocalMd5(docFile: DocumentFile): String =
         computeHash(context.contentResolver.openInputStream(docFile.uri), DIGEST_MD5)
 
-    private fun computeFileMd5(file: File): String =
-        computeHash(runCatching { FileInputStream(file) }.getOrNull() ?: return "", DIGEST_MD5)
+    private fun computeFileMd5(file: File): String {
+        val stream = runCatching { FileInputStream(file) }.getOrNull() ?: return ""
+        return computeHash(stream, DIGEST_MD5)
+    }
 
     private fun computeHash(stream: InputStream?, algorithm: String): String {
         if (stream == null) return ""
